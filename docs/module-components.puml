@@ -1,0 +1,279 @@
+@startuml Module Components
+
+!allowmixing
+!define RECTANGLE class
+skinparam backgroundColor #faf4ed
+skinparam defaultFontColor #575279
+skinparam defaultFontName SF Pro Display
+skinparam shadowing false
+skinparam RoundCorner 8
+
+skinparam component {
+    BackgroundColor #fffaf3
+    BorderColor #d7827e
+    FontColor #575279
+}
+
+skinparam package {
+    BackgroundColor #f2e9e1
+    BorderColor #907aa9
+    FontColor #286983
+    Style rectangle
+}
+
+skinparam rectangle {
+    BackgroundColor #fffaf3
+    BorderColor #56949f
+    FontColor #575279
+}
+
+skinparam arrow {
+    Color #907aa9
+    FontColor #575279
+}
+
+skinparam note {
+    BackgroundColor #f2e9e1
+    BorderColor #ea9d34
+    FontColor #575279
+}
+
+skinparam legend {
+    BackgroundColor #fffaf3
+    BorderColor #907aa9
+}
+
+title <size:24><color:#286983>投票系统配置模块详解</color></size>\n<size:14><color:#907aa9>Six Configurable Modules with Options</color></size>
+
+' ==================== 模块1: 投票规则 ====================
+package "模块1: 投票规则 (Voting Rule)" as M1 #f2e9e1 {
+    rectangle "**核心职责**\n定义如何计算投票结果" as M1Core #fffaf3
+    
+    together {
+        component "简单多数\n(Simple Majority)" as M1_1 {
+            note bottom
+                票数最多者胜出
+                适用: 二选一决策
+            end note
+        }
+        
+        component "加权投票\n(Weighted Voting)" as M1_2 {
+            note bottom
+                按Token数量加权
+                适用: DAO治理
+            end note
+        }
+        
+        component "二次方投票\n(Quadratic Voting)" as M1_3 {
+            note bottom
+                成本 = 票数²
+                适用: 公平分配
+            end note
+        }
+        
+        component "排序选择\n(Ranked Choice)" as M1_4 {
+            note bottom
+                按偏好排序
+                适用: 多选项
+            end note
+        }
+    }
+}
+
+' ==================== 模块2: 准入控制 ====================
+package "模块2: 准入控制 (Access Control)" as M2 #f2e9e1 {
+    rectangle "**核心职责**\n确定谁有资格参与投票" as M2Core #fffaf3
+    
+    together {
+        component "Token门控\n(Token Gating)" as M2_1 {
+            note bottom
+                持有指定ERC20
+                最低持有量要求
+            end note
+        }
+        
+        component "NFT门控\n(NFT Gating)" as M2_2 {
+            note bottom
+                持有指定NFT
+                可指定特定属性
+            end note
+        }
+        
+        component "白名单\n(Whitelist)" as M2_3 {
+            note bottom
+                Merkle树验证
+                预设地址列表
+            end note
+        }
+        
+        component "Semaphore群组\n(Semaphore Group)" as M2_4 {
+            note bottom
+                零知识成员证明
+                完全匿名准入
+            end note
+        }
+    }
+}
+
+' ==================== 模块3: 隐私保护 ====================
+package "模块3: 隐私保护 (Privacy)" as M3 #f2e9e1 {
+    rectangle "**核心职责**\n保护投票内容和投票者身份" as M3Core #fffaf3
+    
+    together {
+        component "公开投票\n(Public)" as M3_1 {
+            note bottom
+                身份公开
+                选票公开
+            end note
+        }
+        
+        component "匿名投票\n(Anonymous)" as M3_2 {
+            note bottom
+                Semaphore隐藏身份
+                选票内容公开
+            end note
+        }
+        
+        component "加密投票\n(Encrypted)" as M3_3 {
+            note bottom
+                身份可见
+                同态加密选票
+            end note
+        }
+        
+        component "完全隐私\n(Full Privacy)" as M3_4 {
+            note bottom
+                Semaphore + 同态加密
+                身份和内容都隐藏
+            end note
+        }
+    }
+}
+
+' ==================== 模块4: 时间控制 ====================
+package "模块4: 时间控制 (Timing)" as M4 #f2e9e1 {
+    rectangle "**核心职责**\n管理投票的生命周期" as M4Core #fffaf3
+    
+    together {
+        component "固定时段\n(Fixed Period)" as M4_1 {
+            note bottom
+                Unix时间戳
+                开始/结束时间
+            end note
+        }
+        
+        component "区块高度\n(Block Height)" as M4_2 {
+            note bottom
+                指定区块范围
+                更抗操控
+            end note
+        }
+        
+        component "动态延长\n(Dynamic Extension)" as M4_3 {
+            note bottom
+                临近结束有新票
+                自动延长时间
+            end note
+        }
+        
+        component "快照投票\n(Snapshot)" as M4_4 {
+            note bottom
+                特定区块快照权重
+                防止闪电贷攻击
+            end note
+        }
+    }
+}
+
+' ==================== 模块5: 结果揭示 ====================
+package "模块5: 结果揭示 (Result Revelation)" as M5 #f2e9e1 {
+    rectangle "**核心职责**\n控制何时、如何公开结果" as M5Core #fffaf3
+    
+    together {
+        component "实时公开\n(Real-time)" as M5_1 {
+            note bottom
+                投票即可见
+                无隐私保护
+            end note
+        }
+        
+        component "投票后公开\n(After Voting)" as M5_2 {
+            note bottom
+                结束后统一公布
+                防止跟风投票
+            end note
+        }
+        
+        component "阈值解密\n(Threshold Decrypt)" as M5_3 {
+            note bottom
+                t-of-n委员会解密
+                分布式信任
+            end note
+        }
+        
+        component "延迟揭示\n(Delayed Reveal)" as M5_4 {
+            note bottom
+                提交-揭示模式
+                两阶段协议
+            end note
+        }
+    }
+}
+
+' ==================== 模块6: 执行机制 ====================
+package "模块6: 执行机制 (Execution)" as M6 #f2e9e1 {
+    rectangle "**核心职责**\n投票通过后如何执行" as M6Core #fffaf3
+    
+    together {
+        component "链上自动执行\n(On-chain Auto)" as M6_1 {
+            note bottom
+                自动调用目标合约
+                无需人工干预
+            end note
+        }
+        
+        component "多签触发\n(Multi-sig)" as M6_2 {
+            note bottom
+                通知多签钱包
+                人工审核执行
+            end note
+        }
+        
+        component "Timelock执行\n(Timelock)" as M6_3 {
+            note bottom
+                延迟执行
+                可取消窗口
+            end note
+        }
+        
+        component "链下通知\n(Off-chain)" as M6_4 {
+            note bottom
+                仅作为信号
+                链下实体执行
+            end note
+        }
+    }
+}
+
+' ==================== 依赖关系 ====================
+M3_2 ..> M2_4 : <color:#d7827e>requires</color>
+M3_4 ..> M2_4 : <color:#d7827e>requires</color>
+M3_4 ..> M5_3 : <color:#d7827e>requires</color>
+M3_3 ..> M5_3 : <color:#d7827e>recommended</color>
+M4_4 ..> M1_2 : <color:#56949f>recommended with</color>
+M6_1 ..> M5_2 : <color:#56949f>works with</color>
+M6_3 ..> M6_1 : <color:#56949f>extends</color>
+
+' ==================== 技术栈说明 ====================
+legend bottom
+    |= 核心技术 |= 用途 |
+    | <color:#286983>Paillier加法同态加密</color> | 加密投票内容，支持密文状态下聚合票数 |
+    | <color:#286983>Semaphore协议</color> | 零知识证明群组成员身份，实现匿名投票 |
+    | <color:#286983>Merkle Tree</color> | 高效验证成员资格和白名单 |
+    | <color:#286983>阈值密码学</color> | 分布式密钥管理，防止单点故障 |
+endlegend
+
+footer <size:11><color:#907aa9>模块化设计 - 每个投票可独立配置六大模块 | Modular Voting System Architecture</color></size>
+
+@enduml
+

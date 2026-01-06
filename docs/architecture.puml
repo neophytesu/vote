@@ -1,0 +1,224 @@
+@startuml Web3 Voting System Architecture
+
+!allowmixing
+!define RECTANGLE class
+skinparam backgroundColor #1a1a2e
+skinparam defaultFontColor #eaeaea
+skinparam defaultFontName JetBrains Mono
+skinparam shadowing false
+
+skinparam component {
+    BackgroundColor #16213e
+    BorderColor #0f3460
+    FontColor #e94560
+}
+
+skinparam package {
+    BackgroundColor #0f3460
+    BorderColor #533483
+    FontColor #00fff5
+}
+
+skinparam rectangle {
+    BackgroundColor #16213e
+    BorderColor #e94560
+    FontColor #eaeaea
+    RoundCorner 15
+}
+
+skinparam arrow {
+    Color #00fff5
+    FontColor #eaeaea
+}
+
+skinparam note {
+    BackgroundColor #533483
+    BorderColor #e94560
+    FontColor #eaeaea
+}
+
+title <size:24><color:#00fff5>Web3 模块化投票系统架构</color></size>\n<size:14><color:#e94560>Modular Voting System with Homomorphic Encryption & Semaphore</color></size>
+
+' ==================== 配置模块层 ====================
+package "配置模块层 (Configuration Modules)" as ConfigLayer #0f3460 {
+    
+    rectangle "🗳️ **投票规则**\n(Voting Rule)" as VotingRule #16213e {
+        rectangle "简单多数" as SimpleVote #1a1a2e
+        rectangle "加权投票" as WeightedVote #1a1a2e
+        rectangle "二次方投票" as QuadraticVote #1a1a2e
+        rectangle "排序选择" as RankedChoice #1a1a2e
+    }
+    
+    rectangle "🔐 **准入控制**\n(Access Control)" as AccessControl #16213e {
+        rectangle "Token持有" as TokenGate #1a1a2e
+        rectangle "NFT持有" as NFTGate #1a1a2e
+        rectangle "白名单" as Whitelist #1a1a2e
+        rectangle "Semaphore群组" as SemaphoreGroup #1a1a2e
+    }
+    
+    rectangle "🛡️ **隐私保护**\n(Privacy)" as Privacy #16213e {
+        rectangle "公开投票" as PublicVote #1a1a2e
+        rectangle "匿名投票\n(Semaphore)" as AnonVote #1a1a2e
+        rectangle "加密投票\n(同态加密)" as EncryptedVote #1a1a2e
+        rectangle "完全隐私" as FullPrivacy #1a1a2e
+    }
+    
+    rectangle "⏱️ **时间控制**\n(Timing)" as Timing #16213e {
+        rectangle "固定时段" as FixedPeriod #1a1a2e
+        rectangle "区块高度" as BlockHeight #1a1a2e
+        rectangle "动态延长" as DynamicExtend #1a1a2e
+        rectangle "快照投票" as Snapshot #1a1a2e
+    }
+    
+    rectangle "📊 **结果揭示**\n(Result Revelation)" as ResultReveal #16213e {
+        rectangle "实时公开" as Realtime #1a1a2e
+        rectangle "投票结束后" as AfterEnd #1a1a2e
+        rectangle "阈值解密" as ThresholdDecrypt #1a1a2e
+        rectangle "延迟揭示" as DelayedReveal #1a1a2e
+    }
+    
+    rectangle "⚡ **执行机制**\n(Execution)" as Execution #16213e {
+        rectangle "链上自动执行" as OnChainAuto #1a1a2e
+        rectangle "多签触发" as MultiSig #1a1a2e
+        rectangle "Timelock执行" as Timelock #1a1a2e
+        rectangle "链下通知" as OffChainNotify #1a1a2e
+    }
+}
+
+' ==================== 核心协议层 ====================
+package "核心协议层 (Core Protocol Layer)" as CoreLayer #533483 {
+    
+    rectangle "**投票核心合约**\n(Voting Core Contract)" as VotingCore #16213e {
+        component "配置管理器" as ConfigManager
+        component "状态机" as StateMachine
+        component "事件发射器" as EventEmitter
+    }
+    
+    rectangle "**加密模块**\n(Cryptography Module)" as CryptoModule #16213e {
+        component "Paillier同态加密\n(加法同态)" as Paillier
+        component "密钥管理" as KeyManager
+        component "阈值解密协议" as ThresholdDecryption
+    }
+    
+    rectangle "**身份模块**\n(Identity Module)" as IdentityModule #16213e {
+        component "Semaphore协议" as Semaphore
+        component "群组管理" as GroupManager
+        component "零知识证明验证" as ZKVerifier
+    }
+}
+
+' ==================== 投票流程层 ====================
+package "投票流程 (Voting Process Flow)" as ProcessLayer #0f3460 {
+    
+    rectangle "**Step 1: 创建选票**\n(Create Ballot)" as Step1 #e94560 {
+        note right of Step1
+            • 配置六大模块参数
+            • 设置投票选项
+            • 生成加密公钥
+            • 创建Semaphore群组
+        end note
+    }
+    
+    rectangle "**Step 2: 选民注册**\n(Voter Registration)" as Step2 #e94560 {
+        note right of Step2
+            • 准入控制验证
+            • 生成身份承诺
+            • 加入Semaphore群组
+            • 获取投票凭证
+        end note
+    }
+    
+    rectangle "**Step 3: 投票**\n(Cast Vote)" as Step3 #e94560 {
+        note right of Step3
+            • 生成ZK证明(Semaphore)
+            • 同态加密投票内容
+            • 提交加密选票
+            • 防止双重投票
+        end note
+    }
+    
+    rectangle "**Step 4: 计票**\n(Tally)" as Step4 #e94560 {
+        note right of Step4
+            • 同态聚合加密票数
+            • 阈值解密揭示结果
+            • 验证计票正确性
+            • 发布中间状态
+        end note
+    }
+    
+    rectangle "**Step 5: 结果公布与验证**\n(Result Publication & Verification)" as Step5 #e94560 {
+        note right of Step5
+            • 公布最终结果
+            • 提供可验证证明
+            • 触发执行机制
+            • 存档投票记录
+        end note
+    }
+}
+
+' ==================== 数据层 ====================
+package "数据存储层 (Data Storage Layer)" as DataLayer #16213e {
+    database "链上存储\n(On-Chain)" as OnChain {
+        rectangle "投票状态" as VoteState #1a1a2e
+        rectangle "Merkle树根" as MerkleRoot #1a1a2e
+        rectangle "加密票数" as EncryptedTally #1a1a2e
+    }
+    
+    database "链下存储\n(IPFS/Arweave)" as OffChain {
+        rectangle "投票详情" as VoteDetails #1a1a2e
+        rectangle "ZK证明" as ZKProofs #1a1a2e
+        rectangle "审计日志" as AuditLogs #1a1a2e
+    }
+}
+
+' ==================== 关系连接 ====================
+' 配置模块 -> 核心层
+VotingRule --> ConfigManager : 配置
+AccessControl --> ConfigManager : 配置
+Privacy --> ConfigManager : 配置
+Timing --> ConfigManager : 配置
+ResultReveal --> ConfigManager : 配置
+Execution --> ConfigManager : 配置
+
+' 核心层内部
+ConfigManager --> StateMachine
+CryptoModule <--> VotingCore
+IdentityModule <--> VotingCore
+
+' 流程步骤
+Step1 --> Step2 : 创建完成
+Step2 --> Step3 : 注册完成
+Step3 --> Step4 : 投票结束
+Step4 --> Step5 : 计票完成
+
+' 流程 -> 核心层
+Step1 ..> VotingCore : 初始化
+Step2 ..> IdentityModule : 身份注册
+Step3 ..> Semaphore : 匿名证明
+Step3 ..> Paillier : 加密投票
+Step4 ..> ThresholdDecryption : 解密聚合
+Step5 ..> EventEmitter : 结果发布
+
+' 核心层 -> 数据层
+VotingCore --> OnChain : 状态写入
+IdentityModule --> MerkleRoot : 更新根
+CryptoModule --> EncryptedTally : 存储加密票
+VotingCore --> OffChain : 元数据存储
+
+' ==================== 图例 ====================
+legend right
+    |<#e94560> **流程步骤** |
+    |<#16213e> **功能模块** |
+    |<#533483> **核心协议** |
+    |<#0f3460> **配置选项** |
+    ====
+    **加密技术栈:**
+    • Paillier 加法同态加密
+    • Semaphore 零知识身份
+    • Merkle Tree 成员证明
+endlegend
+
+footer <size:12><color:#00fff5>Web3 Modular Voting System | Homomorphic Encryption + Semaphore ZKP</color></size>
+
+@enduml
+

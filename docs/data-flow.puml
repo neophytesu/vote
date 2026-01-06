@@ -1,0 +1,226 @@
+@startuml Web3 Voting Data Flow
+
+!define RECTANGLE class
+skinparam backgroundColor #0d1117
+skinparam defaultFontColor #c9d1d9
+skinparam defaultFontName Monaco
+skinparam shadowing false
+
+skinparam participant {
+    BackgroundColor #161b22
+    BorderColor #30363d
+    FontColor #58a6ff
+}
+
+skinparam actor {
+    BackgroundColor #238636
+    BorderColor #238636
+}
+
+skinparam sequence {
+    ArrowColor #58a6ff
+    LifeLineBorderColor #30363d
+    LifeLineBackgroundColor #21262d
+}
+
+skinparam note {
+    BackgroundColor #161b22
+    BorderColor #f85149
+    FontColor #c9d1d9
+}
+
+title <size:20><color:#58a6ff>投票系统数据流程图</color></size>\n<size:12><color:#8b949e>Homomorphic Encryption + Semaphore ZKP Flow</color></size>
+
+actor "投票发起者\n(Proposer)" as Proposer #238636
+actor "选民\n(Voter)" as Voter #238636
+participant "投票合约\n(VotingContract)" as Contract #161b22
+participant "Semaphore\n群组" as Semaphore #161b22
+participant "同态加密\n模块" as HomoEnc #161b22
+participant "阈值解密\n委员会" as Committee #161b22
+database "链上存储" as Chain #21262d
+database "IPFS" as IPFS #21262d
+
+== Step 1: 创建选票 (Create Ballot) ==
+
+Proposer -> Contract : 创建投票(配置六大模块)
+activate Contract #30363d
+
+Contract -> HomoEnc : 生成Paillier密钥对
+activate HomoEnc #30363d
+HomoEnc --> Contract : 公钥(pk), 私钥分片给委员会
+deactivate HomoEnc
+
+Contract -> Semaphore : 创建群组(groupId)
+activate Semaphore #30363d
+Semaphore --> Contract : 群组创建成功
+deactivate Semaphore
+
+Contract -> Chain : 存储投票配置
+Contract -> IPFS : 存储投票详情
+Contract --> Proposer : 投票ID, 公钥
+
+note right of Contract #161b22
+    **配置参数:**
+    • 投票规则: 简单多数/加权/二次方
+    • 准入控制: Token/NFT/Semaphore
+    • 隐私级别: 完全匿名
+    • 时间窗口: 区块范围
+    • 结果揭示: 阈值解密
+    • 执行方式: 链上自动
+end note
+
+deactivate Contract
+
+== Step 2: 选民注册 (Voter Registration) ==
+
+Voter -> Voter : 本地生成身份密钥
+note right of Voter #161b22
+    **Semaphore身份生成:**
+    identity = {
+      trapdoor: random(),
+      nullifier: random()
+    }
+    commitment = hash(trapdoor, nullifier)
+end note
+
+Voter -> Contract : 请求注册
+activate Contract #30363d
+
+Contract -> Contract : 验证准入条件\n(Token/NFT持有等)
+
+Contract -> Semaphore : 添加成员(commitment)
+activate Semaphore #30363d
+Semaphore -> Semaphore : 更新Merkle树
+Semaphore --> Contract : 新Merkle根
+deactivate Semaphore
+
+Contract -> Chain : 更新群组根
+Contract --> Voter : 注册成功, Merkle路径
+
+deactivate Contract
+
+== Step 3: 投票 (Cast Vote) ==
+
+Voter -> Voter : 构造投票内容 vote ∈ {0,1}
+note right of Voter #161b22
+    **加密投票:**
+    encryptedVote = Enc_pk(vote)
+    
+    **同态性质:**
+    Enc(a) × Enc(b) = Enc(a + b)
+end note
+
+Voter -> HomoEnc : 使用公钥加密投票
+activate HomoEnc #30363d
+HomoEnc --> Voter : encryptedVote
+deactivate HomoEnc
+
+Voter -> Voter : 生成Semaphore证明
+note right of Voter #161b22
+    **ZK证明内容:**
+    • 证明: 我是群组成员
+    • 不泄露: 我是谁
+    • 输出: nullifierHash (防双重投票)
+    
+    proof = generateProof(
+      identity,
+      group,
+      externalNullifier,
+      signal: hash(encryptedVote)
+    )
+end note
+
+Voter -> Contract : 提交(encryptedVote, proof, nullifierHash)
+activate Contract #30363d
+
+Contract -> Semaphore : 验证ZK证明
+activate Semaphore #30363d
+Semaphore -> Semaphore : 验证Merkle证明
+Semaphore -> Semaphore : 验证nullifier未使用
+Semaphore --> Contract : 验证通过
+deactivate Semaphore
+
+Contract -> Contract : 记录nullifierHash (防双投)
+Contract -> Chain : 同态聚合加密票数
+note right of Chain #161b22
+    **链上聚合:**
+    aggregatedEnc = aggregatedEnc × encryptedVote
+    (等价于: Enc(Σ votes))
+end note
+
+Contract --> Voter : 投票成功
+
+deactivate Contract
+
+== Step 4: 计票 (Tally) ==
+
+Contract -> Contract : 检查投票结束条件
+activate Contract #30363d
+
+Contract -> Committee : 请求阈值解密
+activate Committee #30363d
+
+note over Committee #161b22
+    **阈值解密协议 (t-of-n):**
+    每个委员使用私钥分片
+    生成部分解密结果
+    收集 t 个分片即可解密
+end note
+
+Committee -> Committee : 各委员提交解密分片
+Committee -> Committee : 组合分片，完成解密
+Committee --> Contract : 解密后的票数总和
+
+deactivate Committee
+
+Contract -> Contract : 根据投票规则计算结果
+Contract -> Chain : 存储计票结果
+
+deactivate Contract
+
+== Step 5: 结果公布与验证 (Result Publication) ==
+
+Contract -> Chain : 发布最终结果
+activate Contract #30363d
+
+Contract -> IPFS : 存储验证数据
+note right of IPFS #161b22
+    **可验证性数据:**
+    • 所有加密投票列表
+    • 聚合过程证明
+    • 解密正确性证明
+    • 计票过程审计日志
+end note
+
+Contract -> Contract : 检查执行条件
+alt 投票通过
+    Contract -> Contract : 触发执行机制
+    note right of Contract #161b22
+        **执行选项:**
+        • 链上自动执行目标合约
+        • 进入Timelock队列
+        • 通知多签钱包
+    end note
+end
+
+Contract --> Proposer : 结果通知
+Contract --> Voter : 结果通知
+
+deactivate Contract
+
+== 验证流程 (Verification) ==
+
+Voter -> Chain : 获取加密投票列表
+Voter -> Voter : 本地验证同态聚合
+Voter -> Voter : 验证解密正确性
+note right of Voter #161b22
+    **任何人可验证:**
+    1. 重新聚合所有加密票
+    2. 验证聚合结果一致
+    3. 验证解密证明
+    4. 确认结果正确
+end note
+
+@enduml
+
+

@@ -1,0 +1,156 @@
+@startuml Voting State Machine
+
+skinparam backgroundColor #1e1e2e
+skinparam defaultFontColor #cdd6f4
+skinparam defaultFontName Fira Code
+skinparam shadowing false
+
+skinparam state {
+    BackgroundColor #313244
+    BorderColor #89b4fa
+    FontColor #cdd6f4
+    StartColor #a6e3a1
+    EndColor #f38ba8
+}
+
+skinparam arrow {
+    Color #89b4fa
+    FontColor #bac2de
+}
+
+skinparam note {
+    BackgroundColor #45475a
+    BorderColor #f9e2af
+    FontColor #cdd6f4
+}
+
+title <size:22><color:#89b4fa>投票系统状态机</color></size>\n<size:12><color:#a6adc8>Voting Process State Machine</color></size>
+
+[*] --> Created : <color:#a6e3a1>创建投票
+
+state "Step 1: Created\n选票已创建" as Created #313244 {
+    state "配置已设置" as ConfigSet
+    state "加密密钥已生成" as KeyGenerated
+    state "Semaphore群组已创建" as GroupCreated
+    
+    ConfigSet --> KeyGenerated : Paillier密钥对
+    KeyGenerated --> GroupCreated : 创建群组
+}
+
+Created --> Registration : <color:#f9e2af>开始注册
+
+state "Step 2: Registration\n选民注册中" as Registration #313244 {
+    state "验证准入条件" as CheckAccess
+    state "生成身份承诺" as GenCommitment
+    state "加入群组" as JoinGroup
+    
+    CheckAccess --> GenCommitment : 验证通过
+    GenCommitment --> JoinGroup : 更新Merkle树
+    
+    note right of CheckAccess
+        准入控制模块:
+        Token/NFT/白名单验证
+    end note
+}
+
+Registration --> Voting : <color:#f9e2af>注册截止
+
+state "Step 3: Voting\n投票进行中" as Voting #313244 {
+    state "构造投票" as ConstructVote
+    state "同态加密" as Encrypt
+    state "生成ZK证明" as GenProof
+    state "提交投票" as Submit
+    
+    ConstructVote --> Encrypt : Paillier加密
+    Encrypt --> GenProof : Semaphore证明
+    GenProof --> Submit : 链上提交
+    
+    note right of Encrypt
+        **隐私保护:**
+        Enc_pk(vote) - 加密选票
+        
+        **匿名保护:**
+        Semaphore证明 - 隐藏身份
+    end note
+}
+
+Voting --> Tallying : <color:#f9e2af>投票截止
+
+state "Step 4: Tallying\n计票中" as Tallying #313244 {
+    state "聚合加密票" as Aggregate
+    state "阈值解密" as Decrypt
+    state "计算结果" as Compute
+    
+    Aggregate --> Decrypt : 委员会解密
+    Decrypt --> Compute : 应用投票规则
+    
+    note right of Aggregate
+        **同态聚合:**
+        ∏ Enc(vᵢ) = Enc(Σvᵢ)
+        
+        **阈值解密:**
+        t-of-n 委员会协作
+    end note
+}
+
+Tallying --> Finalized : <color:#f9e2af>计票完成
+
+state "Step 5: Finalized\n已完成" as Finalized #313244 {
+    state "结果已公布" as Published
+    state "验证期" as Verification
+    state "执行决议" as Execution
+    
+    Published --> Verification : 允许验证
+    Verification --> Execution : 无异议
+    
+    note right of Execution
+        执行机制模块:
+        • 链上自动执行
+        • Timelock队列
+        • 多签触发
+    end note
+}
+
+Finalized --> [*] : <color:#f38ba8>归档
+
+' ==================== 错误状态 ====================
+state "Cancelled\n已取消" as Cancelled #f38ba8
+
+Created --> Cancelled : <color:#f38ba8>取消投票
+Registration --> Cancelled : <color:#f38ba8>未达法定人数
+Voting --> Cancelled : <color:#f38ba8>参与不足
+
+' ==================== 时间控制 ====================
+note bottom of Registration
+    **时间控制模块适用:**
+    • 固定时段: 按时间戳控制
+    • 区块高度: 按区块号控制
+    • 动态延长: 可延长注册期
+end note
+
+note bottom of Voting
+    **结果揭示模块适用:**
+    • 实时公开: 可见中间结果
+    • 投票后公开: 隐藏至结束
+    • 阈值解密: 无法提前获知
+end note
+
+' ==================== 图例 ====================
+legend right
+    |<#a6e3a1> 开始/正向转换 |
+    |<#f9e2af> 阶段转换 |
+    |<#f38ba8> 取消/结束 |
+    ====
+    **五个核心阶段:**
+    1. Created - 选票创建
+    2. Registration - 选民注册  
+    3. Voting - 投票进行
+    4. Tallying - 计票统计
+    5. Finalized - 结果公布
+endlegend
+
+footer <size:11><color:#a6adc8>State transitions controlled by Time Module | 状态转换由时间控制模块管理</color></size>
+
+@enduml
+
+

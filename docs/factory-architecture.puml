@@ -1,0 +1,50 @@
+@startuml 投票系统合约工厂架构
+
+title 投票系统 - 合约工厂架构
+
+package "工厂层" {
+    [投票工厂\nVotingFactory] as Factory
+    [模块注册表\nModuleRegistry] as Registry
+    Factory --> Registry : 查询
+}
+
+package "投票实例" {
+    [VotingInstance] as Instance
+    
+    package "配置模块" {
+        [投票规则] as M1
+        [准入控制] as M2
+        [隐私保护] as M3
+        [时间控制] as M4
+        [结果揭示] as M5
+        [执行机制] as M6
+    }
+    
+    Instance --> M1
+    Instance --> M2
+    Instance --> M3
+    Instance --> M4
+    Instance --> M5
+    Instance --> M6
+}
+
+Factory ..> Instance : 创建
+
+package "外部协议" {
+    [Semaphore] as Sem
+    [Paillier同态加密] as Pail
+}
+
+M2 --> Sem
+M3 --> Sem
+M3 --> Pail
+M5 --> Pail
+
+Registry <.. M1 : 注册
+Registry <.. M2
+Registry <.. M3
+Registry <.. M4
+Registry <.. M5
+Registry <.. M6
+
+@enduml
