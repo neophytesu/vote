@@ -7,8 +7,9 @@ import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
  * 1. RegistrationCenter - 注册中心
  * 2. VotingCenter - 计票中心
  * 3. RevealCenter - 揭示中心
- * 4. VotingFactory - 工厂合约（整合上述三个中心）
- * 5. 设置各中心的授权合约地址
+ * 4. StatisticsCenter - 统计中心
+ * 5. VotingFactory - 工厂合约（整合上述四个中心）
+ * 6. 设置各中心的授权合约地址
  */
 const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
   // 1. 部署注册中心
@@ -20,14 +21,18 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
   // 3. 部署揭示中心
   const revealCenter = m.contract("RevealCenter", []);
 
-  // 4. 部署工厂合约，传入三个中心的地址
+  // 4. 部署统计中心
+  const statisticsCenter = m.contract("StatisticsCenter", []);
+
+  // 5. 部署工厂合约，传入四个中心的地址
   const votingFactory = m.contract("VotingFactory", [
     registrationCenter,
     votingCenter,
     revealCenter,
+    statisticsCenter,
   ]);
 
-  // 5. 设置各中心的授权合约为 VotingFactory
+  // 6. 设置各中心的授权合约为 VotingFactory
   m.call(registrationCenter, "setVotingCore", [votingFactory], {
     id: "setVotingCore_registration",
   });
@@ -44,10 +49,16 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     id: "setVotingCore_reveal",
   });
 
+  // 设置统计中心的授权调用者
+  m.call(statisticsCenter, "setAuthorizedCaller", [votingFactory], {
+    id: "setAuthorizedCaller_statistics",
+  });
+
   return {
     registrationCenter,
     votingCenter,
     revealCenter,
+    statisticsCenter,
     votingFactory,
   };
 });

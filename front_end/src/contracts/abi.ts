@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-02T20:03:16.864Z
+ * 最后更新: 2026-02-02T20:43:36.438Z
  */
 
 export const VotingCoreABI = [
@@ -50,6 +50,37 @@ export const RevealCenterABI = [
   "function getResult(uint256 proposalId) view returns (tuple(uint256[] voteCounts, uint256 totalVotes, uint256 totalVoters, uint256 winningOption, uint256 winningVotes, bool isRevealed, bool passed, uint256 revealedAt))",
   "function getWinningOption(uint256 proposalId) view returns (uint256 optionIndex, uint256 votes)",
   "function getParticipationRate(uint256 proposalId) view returns (uint256)",
+] as const;
+
+/**
+ * 统计中心合约 ABI
+ */
+export const StatisticsCenterABI = [
+  // 全局统计
+  "function getGlobalStats() view returns (tuple(uint256 totalVotings, uint256 totalVoters, uint256 totalVotesCast, uint256 totalCreators, uint256 totalParticipants, uint256 completedVotings, uint256 activeVotings))",
+  
+  // 用户统计
+  "function getUserStats(address user) view returns (tuple(uint256 votingsCreated, uint256 votingsParticipated, uint256 votesCast, uint256 firstActivityTime, uint256 lastActivityTime, bool isCreator, bool isParticipant))",
+  
+  // 投票统计
+  "function getVotingStats(uint256 votingId) view returns (tuple(uint256 registrationCount, uint256 voteCount, uint256 participationRate, uint256 createdAt, uint256 completedAt, uint8 rule, uint8 privacy, bool isAutoAdvance))",
+  
+  // 规则和隐私统计
+  "function getRuleStats() view returns (uint256 simpleMajority, uint256 weighted, uint256 quadratic, uint256 rankedChoice)",
+  "function getPrivacyStats() view returns (uint256 publicCount, uint256 anonymousCount, uint256 encryptedCount, uint256 fullPrivacyCount)",
+  "function getAdvanceModeStats() view returns (uint256 autoAdvance, uint256 manualAdvance)",
+  
+  // 排行榜
+  "function getTopCreators() view returns (address[])",
+  "function getTopParticipants() view returns (address[])",
+  
+  // 时间统计
+  "function getDailyStats(uint256 dayTimestamp) view returns (uint256 votingsCreated, uint256 votesCast)",
+  "function getRecentDailyStats(uint256 days_) view returns (uint256[] votingsCreated, uint256[] votesCast)",
+  
+  // 计数
+  "function getCreatorCount() view returns (uint256)",
+  "function getParticipantCount() view returns (uint256)",
 ] as const;
 
 /**
@@ -133,13 +164,15 @@ export const CONTRACT_ADDRESSES = {
     registrationCenter: "0x0000000000000000000000000000000000000000",
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
+    statisticsCenter: "0x0000000000000000000000000000000000000000",
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingFactory: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+    votingFactory: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
     registrationCenter: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    votingCenter: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    votingCenter: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     revealCenter: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    statisticsCenter: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
   },
 } as const;
 

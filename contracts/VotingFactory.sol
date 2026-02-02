@@ -5,6 +5,7 @@ import "./interfaces/IVotingTypes.sol";
 import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
 import "./RevealCenter.sol";
+import "./StatisticsCenter.sol";
 
 /**
  * @title VotingFactory
@@ -100,6 +101,9 @@ contract VotingFactory is IVotingTypes {
     
     /// @notice 揭示中心合约
     RevealCenter public revealCenter;
+    
+    /// @notice 统计中心合约
+    StatisticsCenter public statisticsCenter;
 
     /// @notice 投票计数器
     uint256 public votingCount;
@@ -215,16 +219,19 @@ contract VotingFactory is IVotingTypes {
      * @param _registrationCenter 注册中心合约地址
      * @param _votingCenter 计票中心合约地址
      * @param _revealCenter 揭示中心合约地址
+     * @param _statisticsCenter 统计中心合约地址
      */
     constructor(
         address _registrationCenter,
         address _votingCenter,
-        address _revealCenter
+        address _revealCenter,
+        address _statisticsCenter
     ) {
         owner = msg.sender;
         registrationCenter = RegistrationCenter(_registrationCenter);
         votingCenter = VotingCenter(_votingCenter);
         revealCenter = RevealCenter(_revealCenter);
+        statisticsCenter = StatisticsCenter(_statisticsCenter);
     }
 
     /**
@@ -269,6 +276,17 @@ contract VotingFactory is IVotingTypes {
 
         // 记录创建者的投票
         creatorVotings[msg.sender].push(votingId);
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVotingCreated(
+                votingId,
+                msg.sender,
+                params.votingRule,
+                params.privacyLevel,
+                params.autoAdvance
+            );
+        }
 
         emit VotingCreated(votingId, msg.sender, params.title, block.timestamp);
         
@@ -327,6 +345,11 @@ contract VotingFactory is IVotingTypes {
 
         // 记录用户参与的投票
         voterParticipations[msg.sender].push(votingId);
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoterRegistered(votingId, msg.sender);
+        }
 
         emit VoterRegistered(votingId, msg.sender);
     }
@@ -387,6 +410,11 @@ contract VotingFactory is IVotingTypes {
         // 调用计票中心进行投票
         bool success = votingCenter.castVote(votingId, msg.sender, optionIndex);
         require(success, "Vote failed");
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
 
         emit VoteCast(votingId, msg.sender, optionIndex);
     }
@@ -454,6 +482,11 @@ contract VotingFactory is IVotingTypes {
         );
 
         voting.state = VotingState.Finalized;
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVotingCompleted(votingId);
+        }
 
         emit ResultRevealed(votingId, result.winningOption);
         emit StateChanged(votingId, VotingState.Finalized);
@@ -675,7 +708,8 @@ contract VotingFactory is IVotingTypes {
     function updateCenters(
         address _registrationCenter,
         address _votingCenter,
-        address _revealCenter
+        address _revealCenter,
+        address _statisticsCenter
     ) external onlyOwner {
         if (_registrationCenter != address(0)) {
             registrationCenter = RegistrationCenter(_registrationCenter);
@@ -685,6 +719,9 @@ contract VotingFactory is IVotingTypes {
         }
         if (_revealCenter != address(0)) {
             revealCenter = RevealCenter(_revealCenter);
+        }
+        if (_statisticsCenter != address(0)) {
+            statisticsCenter = StatisticsCenter(_statisticsCenter);
         }
     }
 
@@ -697,13 +734,15 @@ contract VotingFactory is IVotingTypes {
         returns (
             address registration,
             address voting,
-            address reveal
+            address reveal,
+            address statistics
         ) 
     {
         return (
             address(registrationCenter),
             address(votingCenter),
-            address(revealCenter)
+            address(revealCenter),
+            address(statisticsCenter)
         );
     }
 }

@@ -45,6 +45,7 @@ async function main() {
     registrationCenter: deployedAddresses["VotingFactoryModule#RegistrationCenter"] || "0x0000000000000000000000000000000000000000",
     votingCenter: deployedAddresses["VotingFactoryModule#VotingCenter"] || "0x0000000000000000000000000000000000000000",
     revealCenter: deployedAddresses["VotingFactoryModule#RevealCenter"] || "0x0000000000000000000000000000000000000000",
+    statisticsCenter: deployedAddresses["VotingFactoryModule#StatisticsCenter"] || "0x0000000000000000000000000000000000000000",
   };
 
   // 生成前端配置文件内容
@@ -100,6 +101,37 @@ export const RevealCenterABI = [
   "function getResult(uint256 proposalId) view returns (tuple(uint256[] voteCounts, uint256 totalVotes, uint256 totalVoters, uint256 winningOption, uint256 winningVotes, bool isRevealed, bool passed, uint256 revealedAt))",
   "function getWinningOption(uint256 proposalId) view returns (uint256 optionIndex, uint256 votes)",
   "function getParticipationRate(uint256 proposalId) view returns (uint256)",
+] as const;
+
+/**
+ * 统计中心合约 ABI
+ */
+export const StatisticsCenterABI = [
+  // 全局统计
+  "function getGlobalStats() view returns (tuple(uint256 totalVotings, uint256 totalVoters, uint256 totalVotesCast, uint256 totalCreators, uint256 totalParticipants, uint256 completedVotings, uint256 activeVotings))",
+  
+  // 用户统计
+  "function getUserStats(address user) view returns (tuple(uint256 votingsCreated, uint256 votingsParticipated, uint256 votesCast, uint256 firstActivityTime, uint256 lastActivityTime, bool isCreator, bool isParticipant))",
+  
+  // 投票统计
+  "function getVotingStats(uint256 votingId) view returns (tuple(uint256 registrationCount, uint256 voteCount, uint256 participationRate, uint256 createdAt, uint256 completedAt, uint8 rule, uint8 privacy, bool isAutoAdvance))",
+  
+  // 规则和隐私统计
+  "function getRuleStats() view returns (uint256 simpleMajority, uint256 weighted, uint256 quadratic, uint256 rankedChoice)",
+  "function getPrivacyStats() view returns (uint256 publicCount, uint256 anonymousCount, uint256 encryptedCount, uint256 fullPrivacyCount)",
+  "function getAdvanceModeStats() view returns (uint256 autoAdvance, uint256 manualAdvance)",
+  
+  // 排行榜
+  "function getTopCreators() view returns (address[])",
+  "function getTopParticipants() view returns (address[])",
+  
+  // 时间统计
+  "function getDailyStats(uint256 dayTimestamp) view returns (uint256 votingsCreated, uint256 votesCast)",
+  "function getRecentDailyStats(uint256 days_) view returns (uint256[] votingsCreated, uint256[] votesCast)",
+  
+  // 计数
+  "function getCreatorCount() view returns (uint256)",
+  "function getParticipantCount() view returns (uint256)",
 ] as const;
 
 /**
@@ -183,6 +215,7 @@ export const CONTRACT_ADDRESSES = {
     registrationCenter: "0x0000000000000000000000000000000000000000",
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
+    statisticsCenter: "0x0000000000000000000000000000000000000000",
   },
   // 本地开发网络 - 自动更新
   localhost: {
@@ -190,6 +223,7 @@ export const CONTRACT_ADDRESSES = {
     registrationCenter: "${addresses.registrationCenter}",
     votingCenter: "${addresses.votingCenter}",
     revealCenter: "${addresses.revealCenter}",
+    statisticsCenter: "${addresses.statisticsCenter}",
   },
 } as const;
 
@@ -220,6 +254,7 @@ export function getContractAddresses(chainId: number) {
   console.log(`   RegistrationCenter: ${addresses.registrationCenter}`);
   console.log(`   VotingCenter:       ${addresses.votingCenter}`);
   console.log(`   RevealCenter:       ${addresses.revealCenter}`);
+  console.log(`   StatisticsCenter:   ${addresses.statisticsCenter}`);
   console.log("\n🚀 现在可以启动前端了: cd front_end && npm run dev");
 }
 

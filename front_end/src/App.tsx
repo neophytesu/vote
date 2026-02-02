@@ -23,6 +23,7 @@ import { useWallet, getChainName } from "@/hooks/useWallet";
 import type { WalletState } from "@/hooks/useWallet";
 import { VotingState, VotingRule, PrivacyLevel } from "@/contracts/abi";
 import { useVotingFactory, type VotingDetails } from "@/hooks/useVotingFactory";
+import { useStatisticsCenter } from "@/hooks/useStatisticsCenter";
 import {
   Lock,
   Eye,
@@ -450,11 +451,49 @@ function Header({ wallet, onConnect, onDisconnect }: HeaderProps) {
   );
 }
 
-function StatsCards() {
+interface StatsCardsProps {
+  globalStats: {
+    totalVotings: number;
+    totalVoters: number;
+    totalVotesCast: number;
+    activeVotings: number;
+  } | null;
+  privacyStats: {
+    publicCount: number;
+    anonymousCount: number;
+    encryptedCount: number;
+    fullPrivacyCount: number;
+  } | null;
+  isLoading: boolean;
+}
+
+function StatsCards({ globalStats, privacyStats, isLoading }: StatsCardsProps) {
+  // 计算隐私投票占比
+  const calculatePrivacyPercentage = () => {
+    if (!privacyStats) return 0;
+    const total = privacyStats.publicCount + privacyStats.anonymousCount + 
+                  privacyStats.encryptedCount + privacyStats.fullPrivacyCount;
+    if (total === 0) return 0;
+    const privacyVotes = privacyStats.anonymousCount + privacyStats.encryptedCount + 
+                         privacyStats.fullPrivacyCount;
+    return Math.round((privacyVotes / total) * 100);
+  };
+
+  // 格式化数字
+  const formatNumber = (num: number): string => {
+    if (num >= 1000000) {
+      return (num / 1000000).toFixed(1) + 'M';
+    }
+    if (num >= 1000) {
+      return (num / 1000).toFixed(1) + 'K';
+    }
+    return num.toLocaleString();
+  };
+
   const stats = [
     {
       label: "活跃提案",
-      value: "12",
+      value: isLoading ? "..." : formatNumber(globalStats?.activeVotings ?? 0),
       icon: (
         <svg
           className="w-5 h-5"
@@ -470,12 +509,11 @@ function StatsCards() {
           />
         </svg>
       ),
-      change: "+3",
       color: "text-emerald-400",
     },
     {
       label: "注册选民",
-      value: "8,942",
+      value: isLoading ? "..." : formatNumber(globalStats?.totalVoters ?? 0),
       icon: (
         <svg
           className="w-5 h-5"
@@ -491,12 +529,11 @@ function StatsCards() {
           />
         </svg>
       ),
-      change: "+127",
       color: "text-blue-400",
     },
     {
       label: "总投票数",
-      value: "47.2K",
+      value: isLoading ? "..." : formatNumber(globalStats?.totalVotesCast ?? 0),
       icon: (
         <svg
           className="w-5 h-5"
@@ -512,12 +549,11 @@ function StatsCards() {
           />
         </svg>
       ),
-      change: "+2.3K",
       color: "text-violet-400",
     },
     {
       label: "隐私投票",
-      value: "89%",
+      value: isLoading ? "..." : `${calculatePrivacyPercentage()}%`,
       icon: (
         <svg
           className="w-5 h-5"
@@ -533,7 +569,6 @@ function StatsCards() {
           />
         </svg>
       ),
-      change: "+5%",
       color: "text-fuchsia-400",
     },
   ];
@@ -557,9 +592,6 @@ function StatsCards() {
                 {stat.icon}
               </div>
             </div>
-            <p className={`text-xs mt-2 ${stat.color}`}>
-              {stat.change} 本周
-            </p>
           </CardContent>
         </Card>
       ))}
@@ -1078,7 +1110,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
 
   const handleAddOption = () => {
     if (options.length < 6) {
-      setOptions([...options, `选项 ${options.length + 1}`]);
+      setOptions([...options, ""]);
     }
   };
 
@@ -1234,6 +1266,45 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
             {/* Step 2: 投票选项 */}
             {step === 2 && (
               <>
+                {/* 预设模式选择 */}
+                <div className="space-y-3">
+                  <label className="text-sm text-zinc-300">选项模板</label>
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      onClick={() => setOptions(["赞成", "反对"])}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        options.length === 2 && options[0] === "赞成" && options[1] === "反对"
+                          ? "border-violet-500 bg-violet-500/10"
+                          : "border-zinc-700 hover:border-zinc-600"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <svg className="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                        </svg>
+                        <span className="text-sm font-medium text-zinc-200">赞成/反对</span>
+                      </div>
+                      <p className="text-xs text-zinc-500">适用于简单的是否决策</p>
+                    </button>
+                    <button
+                      onClick={() => setOptions(["", ""])}
+                      className={`p-3 rounded-xl border text-left transition-all ${
+                        options.some(o => o === "") || (options.length === 2 && options[0] !== "赞成")
+                          ? "border-violet-500 bg-violet-500/10"
+                          : "border-zinc-700 hover:border-zinc-600"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <svg className="w-4 h-4 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                        </svg>
+                        <span className="text-sm font-medium text-zinc-200">自定义</span>
+                      </div>
+                      <p className="text-xs text-zinc-500">自由设置多个选项</p>
+                    </button>
+                  </div>
+                </div>
+
                 <div className="space-y-3">
                   <label className="text-sm text-zinc-300">投票选项 (2-6个)</label>
                   {options.map((option, index) => (
@@ -1527,12 +1598,20 @@ function TechStack() {
 function App() {
   const wallet = useWallet();
   const votingFactory = useVotingFactory(wallet.chainId);
+  const statisticsCenter = useStatisticsCenter(wallet.chainId);
   const { addToast } = useToast();
   
   const [proposals, setProposals] = useState<LocalProposal[]>([]);
   const [isLoadingProposals, setIsLoadingProposals] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
+  
+  // 用户统计数据（从 StatisticsCenter 获取）
+  const [userStats, setUserStats] = useState<{
+    votingsCreated: number;
+    votingsParticipated: number;
+    votesCast: number;
+  } | null>(null);
 
   // 从合约加载提案列表
   useEffect(() => {
@@ -1585,6 +1664,36 @@ function App() {
   const refreshProposals = useCallback(() => {
     setRefreshTrigger(prev => prev + 1);
   }, []);
+
+  // 从 StatisticsCenter 获取用户统计
+  useEffect(() => {
+    const loadUserStats = async () => {
+      if (!wallet.isConnected || !wallet.address) {
+        setUserStats(null);
+        return;
+      }
+      
+      if (!statisticsCenter.isContractDeployed()) {
+        // 统计中心未部署，回退到本地计算
+        return;
+      }
+
+      try {
+        const stats = await statisticsCenter.fetchUserStats(wallet.address);
+        if (stats) {
+          setUserStats({
+            votingsCreated: stats.votingsCreated,
+            votingsParticipated: stats.votingsParticipated,
+            votesCast: stats.votesCast,
+          });
+        }
+      } catch (err) {
+        console.error("获取用户统计失败:", err);
+      }
+    };
+
+    loadUserStats();
+  }, [wallet.isConnected, wallet.address, statisticsCenter, refreshTrigger]);
 
   // 处理注册 - 调用真实合约
   const handleRegister = useCallback(async (proposalId: number) => {
@@ -1767,7 +1876,11 @@ function App() {
 
       <main className="max-w-7xl mx-auto px-6 py-8 space-y-8">
         {/* 统计卡片 */}
-        <StatsCards />
+        <StatsCards 
+          globalStats={statisticsCenter.globalStats}
+          privacyStats={statisticsCenter.privacyStats}
+          isLoading={statisticsCenter.isLoading}
+        />
 
         {/* 主内容区 */}
         <Tabs defaultValue="all" className="space-y-6">
@@ -1957,75 +2070,130 @@ function App() {
 
           <TabsContent value="my">
             {wallet.isConnected ? (
-              <div className="grid lg:grid-cols-3 gap-6">
-                <div className="lg:col-span-2 space-y-4">
-                  {/* 用户信息卡片 */}
-                  <Card className="bg-zinc-900/50 border-zinc-800">
-                    <CardContent className="pt-6">
-                      <div className="flex items-center gap-4">
-                        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
-                          <span className="text-2xl font-bold text-white">
-                            {wallet.shortAddress?.slice(0, 2)}
-                          </span>
-                        </div>
-                        <div>
-                          <p className="text-lg font-semibold text-zinc-100">
-                            {wallet.shortAddress}
-                          </p>
-                          <p className="text-sm text-zinc-500 font-mono">
-                            {wallet.address}
-                          </p>
-                          <div className="flex items-center gap-3 mt-2">
-                            <Badge
-                              variant="outline"
-                              className="border-emerald-500/50 text-emerald-400"
-                            >
-                              <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5" />
-                              {getChainName(wallet.chainId)}
-                            </Badge>
-                            {wallet.balance && (
-                              <span className="text-sm text-zinc-400">
-                                {parseFloat(wallet.balance).toFixed(4)} ETH
+              (() => {
+                // 筛选我创建或参与的投票
+                const myProposals = proposals.filter(p => 
+                  p.creator?.toLowerCase() === wallet.address?.toLowerCase() || 
+                  p.isRegistered || 
+                  p.hasVoted
+                );
+                
+                return (
+                  <div className="grid lg:grid-cols-3 gap-6">
+                    <div className="lg:col-span-2 space-y-4">
+                      {/* 用户信息卡片 */}
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="pt-6">
+                          <div className="flex items-center gap-4">
+                            <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
+                              <span className="text-2xl font-bold text-white">
+                                {wallet.shortAddress?.slice(0, 2)}
                               </span>
-                            )}
+                            </div>
+                            <div>
+                              <p className="text-lg font-semibold text-zinc-100">
+                                {wallet.shortAddress}
+                              </p>
+                              <p className="text-sm text-zinc-500 font-mono">
+                                {wallet.address}
+                              </p>
+                              <div className="flex items-center gap-3 mt-2">
+                                <Badge
+                                  variant="outline"
+                                  className="border-emerald-500/50 text-emerald-400"
+                                >
+                                  <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1.5" />
+                                  {getChainName(wallet.chainId)}
+                                </Badge>
+                                {wallet.balance && (
+                                  <span className="text-sm text-zinc-400">
+                                    {parseFloat(wallet.balance).toFixed(4)} ETH
+                                  </span>
+                                )}
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                    </CardContent>
-                  </Card>
+                          {/* 统计信息 - 优先使用 StatisticsCenter 的数据 */}
+                          <div className="grid grid-cols-3 gap-4 mt-6 pt-4 border-t border-zinc-800">
+                            <div className="text-center">
+                              <p className="text-2xl font-bold text-violet-400">
+                                {userStats?.votingsCreated ?? proposals.filter(p => p.creator?.toLowerCase() === wallet.address?.toLowerCase()).length}
+                              </p>
+                              <p className="text-xs text-zinc-500">创建的投票</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-2xl font-bold text-emerald-400">
+                                {userStats?.votingsParticipated ?? proposals.filter(p => p.isRegistered).length}
+                              </p>
+                              <p className="text-xs text-zinc-500">已注册</p>
+                            </div>
+                            <div className="text-center">
+                              <p className="text-2xl font-bold text-fuchsia-400">
+                                {userStats?.votesCast ?? proposals.filter(p => p.hasVoted).length}
+                              </p>
+                              <p className="text-xs text-zinc-500">已投票</p>
+                            </div>
+                          </div>
+                        </CardContent>
+                      </Card>
 
-                  {/* 投票记录空状态 */}
-                  <Card className="bg-zinc-900/50 border-zinc-800">
-                    <CardContent className="py-12 text-center">
-                      <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
-                        <svg
-                          className="w-8 h-8 text-zinc-600"
-                          fill="none"
-                          stroke="currentColor"
-                          viewBox="0 0 24 24"
-                        >
-                          <path
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                            strokeWidth={2}
-                            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                      {/* 我的投票列表 */}
+                      {isLoadingProposals ? (
+                        <Card className="bg-zinc-900/50 border-zinc-800">
+                          <CardContent className="py-12 text-center">
+                            <div className="w-12 h-12 mx-auto rounded-full border-4 border-violet-500 border-t-transparent animate-spin mb-4" />
+                            <p className="text-zinc-400">正在加载...</p>
+                          </CardContent>
+                        </Card>
+                      ) : myProposals.length === 0 ? (
+                        <Card className="bg-zinc-900/50 border-zinc-800">
+                          <CardContent className="py-12 text-center">
+                            <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
+                              <svg
+                                className="w-8 h-8 text-zinc-600"
+                                fill="none"
+                                stroke="currentColor"
+                                viewBox="0 0 24 24"
+                              >
+                                <path
+                                  strokeLinecap="round"
+                                  strokeLinejoin="round"
+                                  strokeWidth={2}
+                                  d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"
+                                />
+                              </svg>
+                            </div>
+                            <h3 className="text-lg font-semibold text-zinc-300">
+                              暂无投票记录
+                            </h3>
+                            <p className="text-sm text-zinc-500 mt-1">
+                              您还没有创建或参与任何投票，去看看有哪些提案吧！
+                            </p>
+                          </CardContent>
+                        </Card>
+                      ) : (
+                        myProposals.map((proposal) => (
+                          <ProposalCard 
+                            key={proposal.id} 
+                            proposal={proposal} 
+                            wallet={wallet}
+                            onRegister={handleRegister}
+                            onVote={handleVote}
+                            onStartRegistration={handleStartRegistration}
+                            onStartVoting={handleStartVoting}
+                            onStartTallying={handleStartTallying}
+                            onRevealResult={handleRevealResult}
                           />
-                        </svg>
-                      </div>
-                      <h3 className="text-lg font-semibold text-zinc-300">
-                        暂无投票记录
-                      </h3>
-                      <p className="text-sm text-zinc-500 mt-1">
-                        您还没有参与任何投票，去看看有哪些提案吧！
-                      </p>
-                    </CardContent>
-                  </Card>
-                </div>
-                <div className="space-y-4">
-                  <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
-                  <TechStack />
-                </div>
-              </div>
+                        ))
+                      )}
+                    </div>
+                    <div className="space-y-4">
+                      <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
+                      <TechStack />
+                    </div>
+                  </div>
+                );
+              })()
             ) : (
               <div className="text-center py-16">
                 <div className="w-20 h-20 mx-auto rounded-2xl bg-gradient-to-br from-violet-500/20 to-fuchsia-500/20 border border-violet-500/30 flex items-center justify-center mb-6">
