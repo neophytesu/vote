@@ -7,7 +7,10 @@
   "type": "module",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "node": "npx hardhat node",
+    "deploy:local": "npx hardhat ignition deploy ignition/modules/VotingFactory.ts --network localhost && npx hardhat run scripts/deploy-and-update.ts --network localhost",
+    "deploy:reset": "npx hardhat ignition deploy ignition/modules/VotingFactory.ts --network localhost --reset && npx hardhat run scripts/deploy-and-update.ts --network localhost"
   },
   "devDependencies": {
     "@nomicfoundation/hardhat-ignition": "^3.0.5",

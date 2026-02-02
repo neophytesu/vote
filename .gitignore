@@ -1,20 +1,64 @@
 # Node modules
+node_modules/
 /node_modules
 
 # Compilation output
 /dist
+dist/
 
 # pnpm deploy output
 /bundle
 
 # Hardhat Build Artifacts
 /artifacts
+artifacts/
 
 # Hardhat compilation (v2) support directory
 /cache
+cache/
 
 # Typechain output
 /types
+typechain-types/
 
 # Hardhat coverage reports
 /coverage
+coverage/
+coverage.json
+
+# Ignition 部署结果 (包含本地地址，不应提交)
+ignition/deployments/
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+.env.development
+.env.production
+
+# Cursor IDE 配置
+.cursor/
+
+# 编辑器和系统文件
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 日志文件
+*.log
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# 测试覆盖率
+*.lcov
+
+# 临时文件
+*.tmp
+*.temp
+
+# 文档 (本地生成的架构图等)
+docs/

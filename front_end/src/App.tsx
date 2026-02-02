@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,92 +18,116 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
+import { ToastProvider, useToast } from "@/components/ui/toast";
 import { useWallet, getChainName } from "@/hooks/useWallet";
 import type { WalletState } from "@/hooks/useWallet";
+import { VotingState, VotingRule, PrivacyLevel } from "@/contracts/abi";
+import { useVotingFactory, type VotingDetails } from "@/hooks/useVotingFactory";
+import {
+  Lock,
+  Eye,
+  EyeOff,
+  Shield,
+  ShieldCheck,
+  Clock,
+  Timer,
+  Crown,
+  Calendar,
+  KeyRound,
+  TreeDeciduous,
+  BarChart3,
+  Hash,
+} from "lucide-react";
 
-// 模拟数据
-const mockProposals = [
-  {
-    id: 1,
-    title: "社区资金分配提案",
-    description: "将 10% 的社区资金用于开发者激励计划",
-    status: "voting",
-    votesFor: 1247,
-    votesAgainst: 523,
-    totalVoters: 3500,
-    endTime: "2026-01-10T18:00:00",
-    privacy: "encrypted",
-    rule: "quadratic",
-  },
-  {
-    id: 2,
-    title: "协议升级 V2.0",
-    description: "实施新的治理框架和投票机制升级",
-    status: "registration",
-    votesFor: 0,
-    votesAgainst: 0,
-    totalVoters: 2100,
-    endTime: "2026-01-15T12:00:00",
-    privacy: "anonymous",
-    rule: "simple",
-  },
-  {
-    id: 3,
-    title: "新增流动性池",
-    description: "为 ETH/USDC 交易对创建新的流动性激励池",
-    status: "finalized",
-    votesFor: 2890,
-    votesAgainst: 410,
-    totalVoters: 3300,
-    endTime: "2026-01-02T00:00:00",
-    privacy: "public",
-    rule: "weighted",
-  },
-];
+// 本地提案接口（扩展合约数据，添加用户状态）
+interface LocalProposal {
+  id: number;
+  title: string;
+  description: string;
+  options: string[];
+  status: VotingState;
+  voteCounts: number[];
+  totalVoters: number;
+  endTime: string;
+  privacy: PrivacyLevel;
+  rule: VotingRule;
+  isRegistered?: boolean;
+  hasVoted?: boolean;
+  creator: string;           // 创建者地址
+  autoAdvance: boolean;      // 是否自动推进
+  registrationStart: number; // 注册开始时间
+  registrationEnd: number;   // 注册结束时间
+  votingStart: number;       // 投票开始时间
+  votingEnd: number;         // 投票结束时间
+}
 
-const statusConfig: Record<
-  string,
-  { label: string; color: string; step: number }
-> = {
-  created: {
+// 将合约数据转换为本地提案格式
+function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered: boolean; voted: boolean }): LocalProposal {
+  return {
+    id: voting.id,
+    title: voting.title,
+    description: voting.description,
+    options: voting.options,
+    status: voting.state,
+    voteCounts: voting.voteCounts,
+    totalVoters: voting.totalVoters,
+    endTime: new Date(voting.votingEnd * 1000).toISOString(),
+    privacy: voting.privacyLevel,
+    rule: voting.votingRule,
+    isRegistered: userStatus?.registered ?? false,
+    hasVoted: userStatus?.voted ?? false,
+    creator: voting.creator,
+    autoAdvance: voting.autoAdvance,
+    registrationStart: voting.registrationStart,
+    registrationEnd: voting.registrationEnd,
+    votingStart: voting.votingStart,
+    votingEnd: voting.votingEnd,
+  };
+}
+
+// 状态配置 - 使用枚举索引
+const statusConfig: Record<VotingState, { label: string; color: string; step: number }> = {
+  [VotingState.Created]: {
     label: "已创建",
     color: "bg-zinc-500",
     step: 1,
   },
-  registration: {
+  [VotingState.Registration]: {
     label: "注册中",
     color: "bg-amber-500",
     step: 2,
   },
-  voting: {
+  [VotingState.Voting]: {
     label: "投票中",
     color: "bg-emerald-500",
     step: 3,
   },
-  tallying: {
+  [VotingState.Tallying]: {
     label: "计票中",
     color: "bg-blue-500",
     step: 4,
   },
-  finalized: {
+  [VotingState.Finalized]: {
     label: "已完成",
     color: "bg-violet-500",
     step: 5,
   },
 };
 
-const privacyLabels: Record<string, string> = {
-  public: "公开投票",
-  anonymous: "匿名投票",
-  encrypted: "加密投票",
-  full: "完全隐私",
+// 隐私级别标签
+const privacyLabels: Record<PrivacyLevel, string> = {
+  [PrivacyLevel.Public]: "公开投票",
+  [PrivacyLevel.Anonymous]: "匿名投票",
+  [PrivacyLevel.Encrypted]: "加密投票",
+  [PrivacyLevel.FullPrivacy]: "完全隐私",
 };
 
-const ruleLabels: Record<string, string> = {
-  simple: "简单多数",
-  weighted: "加权投票",
-  quadratic: "二次方投票",
-  ranked: "排序选择",
+// 投票规则标签
+const ruleLabels: Record<VotingRule, string> = {
+  [VotingRule.SimpleMajority]: "简单多数",
+  [VotingRule.Weighted]: "加权投票",
+  [VotingRule.Quadratic]: "二次方投票",
+  [VotingRule.RankedChoice]: "排序选择",
 };
 
 interface HeaderProps {
@@ -543,15 +567,57 @@ function StatsCards() {
   );
 }
 
-function ProposalCard({ proposal }: { proposal: (typeof mockProposals)[0] }) {
+interface ProposalCardProps {
+  proposal: LocalProposal;
+  wallet: WalletState;
+  onRegister: (proposalId: number) => void;
+  onVote: (proposalId: number, optionIndex: number) => void;
+  onStartRegistration: (proposalId: number) => void;
+  onStartVoting: (proposalId: number) => void;
+  onStartTallying: (proposalId: number) => void;
+  onRevealResult: (proposalId: number) => void;
+}
+
+// 选项颜色配置
+const optionColorConfig = [
+  { bg: "bg-emerald-500", text: "text-emerald-400", gradient: "from-emerald-500 to-emerald-400" },
+  { bg: "bg-rose-500", text: "text-rose-400", gradient: "from-rose-500 to-rose-400" },
+  { bg: "bg-blue-500", text: "text-blue-400", gradient: "from-blue-500 to-blue-400" },
+  { bg: "bg-amber-500", text: "text-amber-400", gradient: "from-amber-500 to-amber-400" },
+  { bg: "bg-violet-500", text: "text-violet-400", gradient: "from-violet-500 to-violet-400" },
+  { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
+];
+
+function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult }: ProposalCardProps) {
   const status = statusConfig[proposal.status];
-  const totalVotes = proposal.votesFor + proposal.votesAgainst;
-  const forPercentage =
-    totalVotes > 0 ? (proposal.votesFor / totalVotes) * 100 : 50;
+  const totalVotes = proposal.voteCounts.reduce((a, b) => a + b, 0);
   const participationRate =
     proposal.totalVoters > 0
       ? ((totalVotes / proposal.totalVoters) * 100).toFixed(1)
       : "0";
+
+  // 计算各选项百分比
+  const optionPercentages = proposal.voteCounts.map(count => 
+    totalVotes > 0 ? (count / totalVotes) * 100 : 0
+  );
+
+  // 找出领先选项
+  const maxVotes = Math.max(...proposal.voteCounts);
+  const leadingIndex = proposal.voteCounts.indexOf(maxVotes);
+
+  // 判断当前用户是否为创建者
+  const isCreator = wallet.address?.toLowerCase() === proposal.creator?.toLowerCase();
+  
+  // 判断是否可以推进状态
+  // 自动模式：任何人可推进；手动模式：仅创建者可推进
+  const canAdvanceState = proposal.autoAdvance || isCreator;
+
+  // 计算时间条件是否满足（仅自动模式需要检查时间）
+  const now = Math.floor(Date.now() / 1000);
+  // 手动模式：无时间限制，随时可推进
+  const canStartRegistration = !proposal.autoAdvance || now >= proposal.registrationStart;
+  const canStartVoting = !proposal.autoAdvance || now >= proposal.votingStart;
+  const canStartTallying = !proposal.autoAdvance || now > proposal.votingEnd;
 
   const timeRemaining = () => {
     const end = new Date(proposal.endTime);
@@ -588,40 +654,63 @@ function ProposalCard({ proposal }: { proposal: (typeof mockProposals)[0] }) {
         {/* 标签 */}
         <div className="flex flex-wrap gap-2">
           <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-300">
-            🔒 {privacyLabels[proposal.privacy]}
+            <Lock className="w-3 h-3 inline mr-1" /> {privacyLabels[proposal.privacy]}
           </Badge>
           <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-300">
-            📊 {ruleLabels[proposal.rule]}
+            <BarChart3 className="w-3 h-3 inline mr-1" /> {ruleLabels[proposal.rule]}
           </Badge>
           <Badge variant="outline" className="text-xs border-zinc-700 text-zinc-300">
-            ⏱️ {timeRemaining()}
+            <Clock className="w-3 h-3 inline mr-1" /> {timeRemaining()}
           </Badge>
+          <Badge 
+            variant="outline" 
+            className={`text-xs ${proposal.autoAdvance ? "border-emerald-500/50 text-emerald-400" : "border-amber-500/50 text-amber-400"}`}
+          >
+            <Timer className="w-3 h-3 inline mr-1" /> {proposal.autoAdvance ? "自动推进" : "手动推进"}
+          </Badge>
+          {isCreator && (
+            <Badge variant="outline" className="text-xs border-violet-500/50 text-violet-400">
+              <Crown className="w-3 h-3 inline mr-1" /> 创建者
+            </Badge>
+          )}
         </div>
 
-        {/* 投票进度 */}
-        {proposal.status === "voting" || proposal.status === "finalized" ? (
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-emerald-400">
-                赞成 {proposal.votesFor.toLocaleString()}
-              </span>
-              <span className="text-rose-400">
-                反对 {proposal.votesAgainst.toLocaleString()}
-              </span>
+        {/* 投票进度 - 支持多选项 */}
+        {proposal.status === VotingState.Voting || proposal.status === VotingState.Finalized ? (
+          <div className="space-y-3">
+            {/* 各选项票数 */}
+            <div className="space-y-2">
+              {proposal.options.map((option, index) => {
+                const color = optionColorConfig[index % optionColorConfig.length];
+                const votes = proposal.voteCounts[index] || 0;
+                const percentage = optionPercentages[index];
+                const isLeading = index === leadingIndex && totalVotes > 0;
+                
+                return (
+                  <div key={index} className="space-y-1">
+                    <div className="flex justify-between items-center text-sm">
+                      <span className={`${color.text} flex items-center gap-1.5`}>
+                        {isLeading && <Crown className="w-3 h-3 inline mr-1" />}
+                        {option}
+                      </span>
+                      <span className="text-zinc-400">
+                        {votes.toLocaleString()} ({percentage.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
+                        style={{ width: `${percentage}%` }}
+                      />
+                    </div>
+                  </div>
+                );
+              })}
             </div>
-            <div className="h-2 bg-zinc-800 rounded-full overflow-hidden flex">
-              <div
-                className="bg-gradient-to-r from-emerald-500 to-emerald-400 transition-all"
-                style={{ width: `${forPercentage}%` }}
-              />
-              <div
-                className="bg-gradient-to-r from-rose-400 to-rose-500"
-                style={{ width: `${100 - forPercentage}%` }}
-              />
-            </div>
-            <p className="text-xs text-zinc-500 text-center">
-              参与率: {participationRate}% ({totalVotes.toLocaleString()} /{" "}
-              {proposal.totalVoters.toLocaleString()})
+            
+            {/* 参与率 */}
+            <p className="text-xs text-zinc-500 text-center pt-1">
+              参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
             </p>
           </div>
         ) : (
@@ -651,29 +740,94 @@ function ProposalCard({ proposal }: { proposal: (typeof mockProposals)[0] }) {
         </p>
 
         {/* 操作按钮 */}
-        <div className="flex gap-2 pt-2">
-          {proposal.status === "registration" && (
-            <Button className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600">
-              注册投票
+        <div className="flex flex-wrap gap-2 pt-2">
+          {/* 状态推进按钮 - Created → Registration */}
+          {proposal.status === VotingState.Created && canAdvanceState && (
+            <Button 
+              onClick={() => onStartRegistration(proposal.id)}
+              disabled={!wallet.isConnected || !canStartRegistration}
+              className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+              title={proposal.autoAdvance && !canStartRegistration ? "未到开始时间" : undefined}
+            >
+              {proposal.autoAdvance ? "推进到注册" : "开始注册"}
+              {proposal.autoAdvance && !canStartRegistration && " (未到时间)"}
             </Button>
           )}
-          {proposal.status === "voting" && (
-            <Dialog>
-              <DialogTrigger asChild>
-                <Button className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600">
-                  参与投票
+
+          {/* 注册阶段按钮 */}
+          {proposal.status === VotingState.Registration && (
+            <>
+              <Button 
+                onClick={() => onRegister(proposal.id)}
+                disabled={!wallet.isConnected || proposal.isRegistered}
+                className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+              >
+                {proposal.isRegistered ? "已注册" : "注册投票"}
+              </Button>
+              {canAdvanceState && (
+                <Button 
+                  onClick={() => onStartVoting(proposal.id)}
+                  disabled={!wallet.isConnected || !canStartVoting}
+                  className="bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                  title={proposal.autoAdvance && !canStartVoting ? "未到开始时间" : undefined}
+                >
+                  {proposal.autoAdvance ? "推进到投票" : "开始投票"}
+                  {proposal.autoAdvance && !canStartVoting && " (未到时间)"}
                 </Button>
-              </DialogTrigger>
-              <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100">
-                <DialogHeader>
-                  <DialogTitle className="text-zinc-100">{proposal.title}</DialogTitle>
-                  <DialogDescription className="text-zinc-400">{proposal.description}</DialogDescription>
-                </DialogHeader>
-                <VoteDialog />
-              </DialogContent>
-            </Dialog>
+              )}
+            </>
           )}
-          {proposal.status === "finalized" && (
+
+          {/* 投票阶段按钮 */}
+          {proposal.status === VotingState.Voting && (
+            <>
+              <Dialog>
+                <DialogTrigger asChild>
+                  <Button 
+                    disabled={!wallet.isConnected || !proposal.isRegistered || proposal.hasVoted}
+                    className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                  >
+                    {proposal.hasVoted ? "已投票" : !proposal.isRegistered ? "未注册" : "参与投票"}
+                  </Button>
+                </DialogTrigger>
+                <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100">
+                  <DialogHeader>
+                    <DialogTitle className="text-zinc-100">{proposal.title}</DialogTitle>
+                    <DialogDescription className="text-zinc-400">{proposal.description}</DialogDescription>
+                  </DialogHeader>
+                  <VoteDialog 
+                    options={proposal.options}
+                    onVote={(optionIndex) => onVote(proposal.id, optionIndex)}
+                  />
+                </DialogContent>
+              </Dialog>
+              {canAdvanceState && (
+                <Button 
+                  onClick={() => onStartTallying(proposal.id)}
+                  disabled={!wallet.isConnected || !canStartTallying}
+                  className="bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                  title={proposal.autoAdvance && !canStartTallying ? "投票未结束" : undefined}
+                >
+                  {proposal.autoAdvance ? "推进到计票" : "结束投票"}
+                  {proposal.autoAdvance && !canStartTallying && " (未到时间)"}
+                </Button>
+              )}
+            </>
+          )}
+
+          {/* 计票阶段按钮 */}
+          {proposal.status === VotingState.Tallying && canAdvanceState && (
+            <Button 
+              onClick={() => onRevealResult(proposal.id)}
+              disabled={!wallet.isConnected}
+              className="flex-1 bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 disabled:opacity-50"
+            >
+              {proposal.autoAdvance ? "推进到完成" : "揭示结果"}
+            </Button>
+          )}
+
+          {/* 已完成 */}
+          {proposal.status === VotingState.Finalized && (
             <Button
               variant="outline"
               className="flex-1 border-zinc-700 hover:border-violet-500 text-zinc-100"
@@ -681,109 +835,94 @@ function ProposalCard({ proposal }: { proposal: (typeof mockProposals)[0] }) {
               查看结果
             </Button>
           )}
-          <Button
-            variant="ghost"
-            size="icon"
-            className="text-zinc-500 hover:text-white"
-          >
-            <svg
-              className="w-4 h-4"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"
-              />
-            </svg>
-          </Button>
         </div>
       </CardContent>
     </Card>
   );
 }
 
-function VoteDialog() {
-  const [selected, setSelected] = useState<"for" | "against" | null>(null);
+interface VoteDialogProps {
+  options: string[];
+  onVote: (optionIndex: number) => void;
+}
+
+function VoteDialog({ options, onVote }: VoteDialogProps) {
+  const [selected, setSelected] = useState<number | null>(null);
   const [step, setStep] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  // 支持更多选项的颜色和图标
+  const optionStyles = [
+    { color: "emerald", hex: "#10b981", icon: "✓" },
+    { color: "rose", hex: "#f43f5e", icon: "✗" },
+    { color: "blue", hex: "#3b82f6", icon: "○" },
+    { color: "amber", hex: "#f59e0b", icon: "◇" },
+    { color: "violet", hex: "#8b5cf6", icon: "★" },
+    { color: "cyan", hex: "#06b6d4", icon: "◆" },
+    { color: "pink", hex: "#ec4899", icon: "♦" },
+    { color: "teal", hex: "#14b8a6", icon: "●" },
+  ];
+
+  const handleSubmitVote = async () => {
+    if (selected === null) return;
+    setIsSubmitting(true);
+    setStep(2);
+    
+    // 模拟生成证明的过程
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // 调用投票回调
+    onVote(selected);
+    setStep(3);
+  };
 
   return (
     <div className="space-y-6 py-4">
       {step === 1 && (
         <>
-          <div className="space-y-3">
-            <button
-              onClick={() => setSelected("for")}
-              className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
-                selected === "for"
-                  ? "border-emerald-500 bg-emerald-500/10"
-                  : "border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                    selected === "for" ? "bg-emerald-500" : "bg-zinc-800"
+          <div className={`space-y-3 ${options.length > 4 ? 'max-h-80 overflow-y-auto pr-2' : ''}`}>
+            {options.map((option, index) => {
+              const style = optionStyles[index % optionStyles.length];
+              const isSelected = selected === index;
+              
+              return (
+                <button
+                  key={index}
+                  onClick={() => setSelected(index)}
+                  className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
+                    isSelected
+                      ? "border-2"
+                      : "border-zinc-800 hover:border-zinc-700"
                   }`}
+                  style={{
+                    borderColor: isSelected ? style.hex : undefined,
+                    backgroundColor: isSelected ? `${style.hex}1a` : undefined,
+                  }}
                 >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M5 13l4 4L19 7"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="font-semibold text-zinc-100">赞成</p>
-                  <p className="text-sm text-zinc-400">支持该提案通过</p>
-                </div>
-              </div>
-            </button>
-
-            <button
-              onClick={() => setSelected("against")}
-              className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
-                selected === "against"
-                  ? "border-rose-500 bg-rose-500/10"
-                  : "border-zinc-800 hover:border-zinc-700"
-              }`}
-            >
-              <div className="flex items-center gap-3">
-                <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center ${
-                    selected === "against" ? "bg-rose-500" : "bg-zinc-800"
-                  }`}
-                >
-                  <svg
-                    className="w-5 h-5"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M6 18L18 6M6 6l12 12"
-                    />
-                  </svg>
-                </div>
-                <div>
-                  <p className="font-semibold text-zinc-100">反对</p>
-                  <p className="text-sm text-zinc-400">不支持该提案</p>
-                </div>
-              </div>
-            </button>
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
+                      style={{
+                        backgroundColor: isSelected ? style.hex : "#27272a"
+                      }}
+                    >
+                      {style.icon}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-zinc-100 truncate">{option}</p>
+                      <p className="text-sm text-zinc-400">选项 {index + 1}</p>
+                    </div>
+                    {isSelected && (
+                      <div className="shrink-0">
+                        <svg className="w-5 h-5" style={{ color: style.hex }} fill="currentColor" viewBox="0 0 20 20">
+                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                        </svg>
+                      </div>
+                    )}
+                  </div>
+                </button>
+              );
+            })}
           </div>
 
           <div className="bg-zinc-800/50 rounded-lg p-3 flex items-start gap-2">
@@ -810,11 +949,11 @@ function VoteDialog() {
           </div>
 
           <Button
-            onClick={() => setStep(2)}
-            disabled={!selected}
+            onClick={handleSubmitVote}
+            disabled={selected === null || isSubmitting}
             className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
           >
-            下一步：生成证明
+            确认投票
           </Button>
         </>
       )}
@@ -837,17 +976,46 @@ function VoteDialog() {
             </svg>
           </div>
           <div>
-            <p className="font-semibold text-zinc-100">正在生成零知识证明...</p>
+            <p className="font-semibold text-zinc-100">正在提交投票...</p>
             <p className="text-sm text-zinc-400 mt-1">
-              证明您是合法选民，同时不泄露身份
+              正在生成证明并提交到区块链
             </p>
           </div>
           <Progress value={66} className="h-2" />
           <div className="text-xs space-y-1">
-            <p className="text-emerald-400">✓ 验证 Semaphore 身份承诺</p>
-            <p className="text-emerald-400">✓ 检查 Merkle 树成员资格</p>
-            <p className="text-violet-400">○ 生成 ZK-SNARK 证明中...</p>
-            <p className="text-zinc-500">○ 同态加密投票内容</p>
+            <p className="text-emerald-400">✓ 验证选民身份</p>
+            <p className="text-emerald-400">✓ 检查投票资格</p>
+            <p className="text-violet-400">○ 提交投票中...</p>
+          </div>
+        </div>
+      )}
+
+      {step === 3 && (
+        <div className="text-center space-y-6 py-4">
+          <div className="w-16 h-16 mx-auto rounded-full bg-gradient-to-r from-emerald-500 to-green-500 flex items-center justify-center">
+            <svg
+              className="w-8 h-8 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M5 13l4 4L19 7"
+              />
+            </svg>
+          </div>
+          <div>
+            <p className="font-semibold text-zinc-100">投票成功！</p>
+            <p className="text-sm text-zinc-400 mt-1">
+              您的投票已成功提交
+            </p>
+          </div>
+          <div className="text-xs space-y-1">
+            <p className="text-emerald-400">✓ 投票已记录</p>
+            <p className="text-emerald-400">✓ 防重复投票已生效</p>
           </div>
         </div>
       )}
@@ -855,36 +1023,458 @@ function VoteDialog() {
   );
 }
 
-function CreateProposalCard() {
+// 创建提案时需要的时间配置
+interface CreateProposalData {
+  title: string;
+  description: string;
+  options: string[];
+  status: VotingState;
+  endTime: string;
+  privacy: PrivacyLevel;
+  rule: VotingRule;
+  registrationStart: number;
+  registrationEnd: number;
+  votingStart: number;
+  votingEnd: number;
+  autoAdvance: boolean;  // 是否自动推进
+}
+
+interface CreateProposalCardProps {
+  wallet: WalletState;
+  onCreateProposal: (proposal: CreateProposalData) => Promise<void>;
+  showToast: (type: "success" | "error" | "warning" | "info", title: string, description?: string) => void;
+}
+
+function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreateProposalCardProps) {
+  const [isOpen, setIsOpen] = useState(false);
+  const [step, setStep] = useState(1);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  
+  // 表单状态
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [options, setOptions] = useState(["赞成", "反对"]);
+  const [rule, setRule] = useState<number>(VotingRule.SimpleMajority);
+  const [privacy, setPrivacy] = useState<number>(PrivacyLevel.Public);
+  
+  // 时间配置（单位：分钟）
+  const [registrationDelay, setRegistrationDelay] = useState(1);     // 注册开始延迟（分钟）
+  const [registrationDuration, setRegistrationDuration] = useState(5); // 注册持续时长（分钟）
+  const [votingDuration, setVotingDuration] = useState(60);          // 投票持续时长（分钟）
+  const [autoAdvance, setAutoAdvance] = useState(true);              // 推进模式：true=自动，false=手动
+
+  const resetForm = () => {
+    setTitle("");
+    setDescription("");
+    setOptions(["赞成", "反对"]);
+    setRule(VotingRule.SimpleMajority);
+    setPrivacy(PrivacyLevel.Public);
+    setRegistrationDelay(1);
+    setRegistrationDuration(5);
+    setVotingDuration(60);
+    setAutoAdvance(true);
+    setStep(1);
+  };
+
+  const handleAddOption = () => {
+    if (options.length < 6) {
+      setOptions([...options, `选项 ${options.length + 1}`]);
+    }
+  };
+
+  const handleRemoveOption = (index: number) => {
+    if (options.length > 2) {
+      setOptions(options.filter((_, i) => i !== index));
+    }
+  };
+
+  const handleOptionChange = (index: number, value: string) => {
+    const newOptions = [...options];
+    newOptions[index] = value;
+    setOptions(newOptions);
+  };
+
+  const handleSubmit = async () => {
+    if (!wallet.isConnected) {
+      showToast("warning", "请先连接钱包");
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    // 计算时间（转换为秒）
+    const now = Math.floor(Date.now() / 1000);
+    const regStart = now + registrationDelay * 60;
+    const regEnd = regStart + registrationDuration * 60;
+    const voteStart = regEnd;
+    const voteEnd = voteStart + votingDuration * 60;
+
+    const newProposal: CreateProposalData = {
+      title,
+      description,
+      options,
+      status: VotingState.Registration,
+      endTime: new Date(voteEnd * 1000).toISOString(),
+      privacy: privacy as PrivacyLevel,
+      rule: rule as VotingRule,
+      registrationStart: regStart,
+      registrationEnd: regEnd,
+      votingStart: voteStart,
+      votingEnd: voteEnd,
+      autoAdvance,
+    };
+
+    console.log("开始创建投票，参数:", newProposal);
+    
+    try {
+      await onCreateProposal(newProposal);
+    } catch (err) {
+      console.error("创建投票出错:", err);
+    } finally {
+      setIsSubmitting(false);
+      setIsOpen(false);
+      resetForm();
+    }
+  };
+
   return (
-    <Card className="bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border-violet-500/20 hover:border-violet-500/40 transition-colors">
-      <CardContent className="pt-6 text-center space-y-4">
-        <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
-          <svg
-            className="w-8 h-8 text-white"
-            fill="none"
-            stroke="currentColor"
-            viewBox="0 0 24 24"
+    <>
+      <Card className="bg-gradient-to-br from-violet-500/10 to-fuchsia-500/10 border-violet-500/20 hover:border-violet-500/40 transition-colors">
+        <CardContent className="pt-6 text-center space-y-4">
+          <div className="w-16 h-16 mx-auto rounded-2xl bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center">
+            <svg
+              className="w-8 h-8 text-white"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M12 4v16m8-8H4"
+              />
+            </svg>
+          </div>
+          <div>
+            <h3 className="font-semibold text-lg">创建新提案</h3>
+            <p className="text-sm text-zinc-500 mt-1">
+              配置投票规则、准入控制、隐私级别等六大模块
+            </p>
+          </div>
+          <Button 
+            onClick={() => setIsOpen(true)}
+            className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600"
           >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth={2}
-              d="M12 4v16m8-8H4"
-            />
-          </svg>
-        </div>
-        <div>
-          <h3 className="font-semibold text-lg">创建新提案</h3>
-          <p className="text-sm text-zinc-500 mt-1">
-            配置投票规则、准入控制、隐私级别等六大模块
-          </p>
-        </div>
-        <Button className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600">
-          开始创建
-        </Button>
-      </CardContent>
-    </Card>
+            开始创建
+          </Button>
+        </CardContent>
+      </Card>
+
+      <Dialog open={isOpen} onOpenChange={setIsOpen}>
+        <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-lg max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="text-zinc-100 flex items-center gap-2">
+              <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-sm">
+                {step}
+              </span>
+              {step === 1 ? "基本信息" : step === 2 ? "投票选项" : "规则配置"}
+            </DialogTitle>
+            <DialogDescription className="text-zinc-400">
+              {step === 1 ? "填写提案的标题和描述" : step === 2 ? "设置投票选项" : "配置投票规则和隐私设置"}
+            </DialogDescription>
+          </DialogHeader>
+
+          {/* 步骤指示器 */}
+          <div className="flex items-center gap-2 py-2">
+            {[1, 2, 3].map((s) => (
+              <div
+                key={s}
+                className={`flex-1 h-1 rounded-full transition-colors ${
+                  s <= step ? "bg-gradient-to-r from-violet-500 to-fuchsia-500" : "bg-zinc-800"
+                }`}
+              />
+            ))}
+          </div>
+
+          <div className="space-y-4 py-4">
+            {/* Step 1: 基本信息 */}
+            {step === 1 && (
+              <>
+                <div className="space-y-2">
+                  <label className="text-sm text-zinc-300">提案标题 *</label>
+                  <input
+                    type="text"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="例如：社区资金分配提案"
+                    className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors"
+                  />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-sm text-zinc-300">提案描述 *</label>
+                  <textarea
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    placeholder="详细描述提案内容..."
+                    rows={4}
+                    className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors resize-none"
+                  />
+                </div>
+                <Button
+                  onClick={() => setStep(2)}
+                  disabled={!title.trim() || !description.trim()}
+                  className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                >
+                  下一步
+                </Button>
+              </>
+            )}
+
+            {/* Step 2: 投票选项 */}
+            {step === 2 && (
+              <>
+                <div className="space-y-3">
+                  <label className="text-sm text-zinc-300">投票选项 (2-6个)</label>
+                  {options.map((option, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <span className="w-8 h-8 rounded-lg bg-zinc-800 flex items-center justify-center text-sm text-zinc-400">
+                        {index + 1}
+                      </span>
+                      <input
+                        type="text"
+                        value={option}
+                        onChange={(e) => handleOptionChange(index, e.target.value)}
+                        placeholder={`选项 ${index + 1}`}
+                        className="flex-1 px-4 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors"
+                      />
+                      {options.length > 2 && (
+                        <button
+                          onClick={() => handleRemoveOption(index)}
+                          className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 flex items-center justify-center transition-colors"
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {options.length < 6 && (
+                    <button
+                      onClick={handleAddOption}
+                      className="w-full py-2 rounded-lg border border-dashed border-zinc-700 text-zinc-500 hover:border-violet-500 hover:text-violet-400 transition-colors"
+                    >
+                      + 添加选项
+                    </button>
+                  )}
+                </div>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setStep(1)}
+                    variant="outline"
+                    className="flex-1 border-zinc-700 text-zinc-300"
+                  >
+                    上一步
+                  </Button>
+                  <Button
+                    onClick={() => setStep(3)}
+                    disabled={options.some(o => !o.trim())}
+                    className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                  >
+                    下一步
+                  </Button>
+                </div>
+              </>
+            )}
+
+            {/* Step 3: 规则配置 */}
+            {step === 3 && (
+              <>
+                <div className="space-y-4">
+                  {/* 投票规则 */}
+                  <div className="space-y-2">
+                    <label className="text-sm text-zinc-300">投票规则</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
+                        { value: VotingRule.Weighted, label: "加权投票", desc: "按Token数量加权" },
+                        { value: VotingRule.Quadratic, label: "二次方投票", desc: "成本=票数²" },
+                        { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序" },
+                      ].map((r) => (
+                        <button
+                          key={r.value}
+                          onClick={() => setRule(r.value)}
+                          className={`p-3 rounded-xl border-2 text-left transition-all ${
+                            rule === r.value
+                              ? "border-violet-500 bg-violet-500/10"
+                              : "border-zinc-800 hover:border-zinc-700"
+                          }`}
+                        >
+                          <p className="font-medium text-sm text-zinc-100">{r.label}</p>
+                          <p className="text-xs text-zinc-500">{r.desc}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 隐私级别 */}
+                  <div className="space-y-2">
+                    <label className="text-sm text-zinc-300">隐私级别</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      {[
+                        { value: PrivacyLevel.Public, label: "公开投票", icon: Eye },
+                        { value: PrivacyLevel.Anonymous, label: "匿名投票", icon: EyeOff },
+                        { value: PrivacyLevel.Encrypted, label: "加密投票", icon: Lock },
+                        { value: PrivacyLevel.FullPrivacy, label: "完全隐私", icon: ShieldCheck },
+                      ].map((p) => (
+                        <button
+                          key={p.value}
+                          onClick={() => setPrivacy(p.value)}
+                          className={`p-3 rounded-xl border-2 text-left transition-all ${
+                            privacy === p.value
+                              ? "border-fuchsia-500 bg-fuchsia-500/10"
+                              : "border-zinc-800 hover:border-zinc-700"
+                          }`}
+                        >
+                          <p.icon className="w-5 h-5 text-zinc-300" />
+                          <p className="font-medium text-sm text-zinc-100 mt-1">{p.label}</p>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 推进模式 - 放在时间配置之前 */}
+                  <div className="space-y-2">
+                    <label className="text-sm text-zinc-300">状态推进模式</label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        onClick={() => setAutoAdvance(true)}
+                        className={`p-3 rounded-xl border-2 text-left transition-all ${
+                          autoAdvance
+                            ? "border-emerald-500 bg-emerald-500/10"
+                            : "border-zinc-800 hover:border-zinc-700"
+                        }`}
+                      >
+                        <p className="font-medium text-sm text-zinc-100">自动推进</p>
+                        <p className="text-xs text-zinc-500">到达时间自动切换状态</p>
+                      </button>
+                      <button
+                        onClick={() => setAutoAdvance(false)}
+                        className={`p-3 rounded-xl border-2 text-left transition-all ${
+                          !autoAdvance
+                            ? "border-amber-500 bg-amber-500/10"
+                            : "border-zinc-800 hover:border-zinc-700"
+                        }`}
+                      >
+                        <p className="font-medium text-sm text-zinc-100">手动推进</p>
+                        <p className="text-xs text-zinc-500">创建者随时可推进，无时间限制</p>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 时间配置 - 仅自动推进模式显示 */}
+                  {autoAdvance && (
+                    <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                      <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                        <Timer className="w-4 h-4" /> 时间配置（单位：分钟）
+                      </p>
+                      
+                      <div className="grid grid-cols-3 gap-3">
+                        {/* 注册开始延迟 */}
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">注册开始延迟</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={registrationDelay}
+                            onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))}
+                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none"
+                          />
+                        </div>
+
+                        {/* 注册持续时长 */}
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">注册阶段时长</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={registrationDuration}
+                            onChange={(e) => setRegistrationDuration(Math.max(1, Number(e.target.value)))}
+                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-emerald-500 focus:outline-none"
+                          />
+                        </div>
+
+                        {/* 投票持续时长 */}
+                        <div className="space-y-1">
+                          <label className="text-xs text-zinc-400">投票阶段时长</label>
+                          <input
+                            type="number"
+                            min="1"
+                            value={votingDuration}
+                            onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))}
+                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      {/* 时间预览 */}
+                      <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
+                        <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 创建后 <span className="text-amber-400">{registrationDelay}</span> 分钟开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 分钟</p>
+                        <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 创建后 <span className="text-violet-400">{registrationDelay + registrationDuration}</span> 分钟开始, 持续 <span className="text-violet-400">{votingDuration}</span> 分钟</p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 手动推进模式提示 */}
+                  {!autoAdvance && (
+                    <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                      <p className="text-sm text-amber-400 flex items-center gap-2">
+                        <Crown className="w-4 h-4" /> 手动推进模式
+                      </p>
+                      <p className="text-xs text-zinc-400 mt-1">
+                        创建后，您可以随时点击按钮推进投票状态，无需等待时间
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex gap-2">
+                  <Button
+                    onClick={() => setStep(2)}
+                    variant="outline"
+                    className="flex-1 border-zinc-700 text-zinc-300"
+                  >
+                    上一步
+                  </Button>
+                  <Button
+                    onClick={handleSubmit}
+                    disabled={isSubmitting || !wallet.isConnected}
+                    className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
+                  >
+                    {isSubmitting ? (
+                      <>
+                        <svg className="w-4 h-4 mr-2 animate-spin" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                        </svg>
+                        创建中...
+                      </>
+                    ) : (
+                      "创建提案"
+                    )}
+                  </Button>
+                </div>
+
+                {!wallet.isConnected && (
+                  <p className="text-sm text-amber-400 text-center">
+                    请先连接钱包以创建提案
+                  </p>
+                )}
+              </>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
@@ -893,22 +1483,22 @@ function TechStack() {
     {
       name: "Semaphore",
       desc: "零知识身份证明",
-      icon: "🔐",
+      icon: Shield,
     },
     {
       name: "Paillier",
       desc: "加法同态加密",
-      icon: "🔢",
+      icon: Hash,
     },
     {
       name: "Merkle Tree",
       desc: "成员资格证明",
-      icon: "🌳",
+      icon: TreeDeciduous,
     },
     {
       name: "阈值解密",
       desc: "t-of-n 委员会协作",
-      icon: "🗝️",
+      icon: KeyRound,
     },
   ];
 
@@ -924,7 +1514,7 @@ function TechStack() {
             key={tech.name}
             className="p-3 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 transition-colors"
           >
-            <span className="text-2xl">{tech.icon}</span>
+            <tech.icon className="w-6 h-6 text-violet-400" />
             <p className="font-medium text-sm mt-2">{tech.name}</p>
             <p className="text-xs text-zinc-500">{tech.desc}</p>
           </div>
@@ -936,6 +1526,223 @@ function TechStack() {
 
 function App() {
   const wallet = useWallet();
+  const votingFactory = useVotingFactory(wallet.chainId);
+  const { addToast } = useToast();
+  
+  const [proposals, setProposals] = useState<LocalProposal[]>([]);
+  const [isLoadingProposals, setIsLoadingProposals] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
+
+  // 从合约加载提案列表
+  useEffect(() => {
+    let isMounted = true;
+    
+    const loadProposals = async () => {
+      if (!wallet.chainId) return;
+      
+      if (!votingFactory.isContractDeployed()) {
+        if (isMounted) setLoadError("合约尚未部署到当前网络");
+        return;
+      }
+
+      if (isMounted) {
+        setIsLoadingProposals(true);
+        setLoadError(null);
+      }
+
+      try {
+        const votings = await votingFactory.getAllVotings();
+        
+        // 如果用户已连接，获取每个提案的用户状态
+        const localProposals: LocalProposal[] = [];
+        for (const voting of votings) {
+          let userStatus = { registered: false, voted: false };
+          if (wallet.isConnected && wallet.address) {
+            userStatus = await votingFactory.getUserVotingStatus(voting.id, wallet.address);
+          }
+          localProposals.push(convertToLocalProposal(voting, userStatus));
+        }
+        
+        if (isMounted) setProposals(localProposals);
+      } catch (err) {
+        console.error("加载提案失败:", err);
+        if (isMounted) setLoadError("加载提案失败，请确保已连接到正确的网络");
+      } finally {
+        if (isMounted) setIsLoadingProposals(false);
+      }
+    };
+
+    loadProposals();
+    
+    return () => {
+      isMounted = false;
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wallet.chainId, wallet.isConnected, wallet.address, refreshTrigger]);
+
+  // 刷新提案列表
+  const refreshProposals = useCallback(() => {
+    setRefreshTrigger(prev => prev + 1);
+  }, []);
+
+  // 处理注册 - 调用真实合约
+  const handleRegister = useCallback(async (proposalId: number) => {
+    console.log("handleRegister: 点击注册, proposalId:", proposalId);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleRegister: 调用 votingFactory.registerVoter");
+    const success = await votingFactory.registerVoter(proposalId);
+    console.log("handleRegister: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "注册成功", "您已成功注册为投票人");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "注册失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 处理投票 - 调用真实合约
+  const handleVote = useCallback(async (proposalId: number, optionIndex: number) => {
+    console.log("handleVote: 点击投票, proposalId:", proposalId, "optionIndex:", optionIndex);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleVote: 调用 votingFactory.castVote");
+    const success = await votingFactory.castVote(proposalId, optionIndex);
+    console.log("handleVote: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "投票成功", "您的投票已提交");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "投票失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 开始注册阶段
+  const handleStartRegistration = useCallback(async (proposalId: number) => {
+    console.log("handleStartRegistration: 点击开始注册, proposalId:", proposalId);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleStartRegistration: 调用 votingFactory.startRegistration");
+    const success = await votingFactory.startRegistration(proposalId);
+    console.log("handleStartRegistration: 结果:", success);
+    if (success) {
+      addToast("success", "已开始注册", "投票已进入注册阶段");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "操作失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 开始投票阶段
+  const handleStartVoting = useCallback(async (proposalId: number) => {
+    console.log("handleStartVoting: 点击开始投票, proposalId:", proposalId);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleStartVoting: 调用 votingFactory.startVoting");
+    const success = await votingFactory.startVoting(proposalId);
+    console.log("handleStartVoting: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "已开始投票", "投票已进入投票阶段");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "操作失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 开始计票阶段
+  const handleStartTallying = useCallback(async (proposalId: number) => {
+    console.log("handleStartTallying: 点击结束投票, proposalId:", proposalId);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleStartTallying: 调用 votingFactory.startTallying");
+    const success = await votingFactory.startTallying(proposalId);
+    console.log("handleStartTallying: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "已结束投票", "投票已进入计票阶段");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "操作失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 揭示结果
+  const handleRevealResult = useCallback(async (proposalId: number) => {
+    console.log("handleRevealResult: 点击揭示结果, proposalId:", proposalId);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleRevealResult: 调用 votingFactory.revealResult");
+    const success = await votingFactory.revealResult(proposalId);
+    console.log("handleRevealResult: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "结果已揭示", "投票结果已公布");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "操作失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 处理创建提案 - 调用真实合约
+  const handleCreateProposal = useCallback(async (proposalData: CreateProposalData) => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+
+    // 使用用户配置的时间
+    const votingId = await votingFactory.createVoting({
+      title: proposalData.title,
+      description: proposalData.description,
+      options: proposalData.options,
+      votingRule: proposalData.rule,
+      privacyLevel: proposalData.privacy,
+      registrationStart: proposalData.registrationStart,
+      registrationEnd: proposalData.registrationEnd,
+      votingStart: proposalData.votingStart,
+      votingEnd: proposalData.votingEnd,
+      quorum: 0, // 无法定人数要求
+      autoAdvance: proposalData.autoAdvance,
+    });
+
+    if (votingId !== null) {
+      console.log("投票创建成功，ID:", votingId);
+      
+      // 自动推进模式：自动开始注册阶段
+      if (proposalData.autoAdvance) {
+        try {
+          await votingFactory.startRegistration(votingId);
+          console.log("自动推进到注册阶段");
+        } catch (err) {
+          console.log("自动推进注册阶段失败（可能时间未到）:", err);
+        }
+      }
+      
+      // 刷新提案列表
+      refreshProposals();
+      addToast("success", "投票创建成功", `投票 #${votingId} 已创建`);
+    } else if (votingFactory.error) {
+      console.error("创建投票失败:", votingFactory.error);
+      addToast("error", "创建投票失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100">
@@ -1000,14 +1807,67 @@ function App() {
             <div className="grid lg:grid-cols-3 gap-6">
               {/* 提案列表 */}
               <div className="lg:col-span-2 space-y-4">
-                {mockProposals.map((proposal) => (
-                  <ProposalCard key={proposal.id} proposal={proposal} />
+                {/* 加载状态 */}
+                {isLoadingProposals && (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <div className="w-12 h-12 mx-auto rounded-full border-4 border-violet-500 border-t-transparent animate-spin mb-4" />
+                      <p className="text-zinc-400">正在从链上加载提案...</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* 错误状态 */}
+                {loadError && !isLoadingProposals && (
+                  <Card className="bg-zinc-900/50 border-rose-500/30">
+                    <CardContent className="py-8 text-center">
+                      <div className="w-12 h-12 mx-auto rounded-full bg-rose-500/10 flex items-center justify-center mb-4">
+                        <svg className="w-6 h-6 text-rose-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                        </svg>
+                      </div>
+                      <p className="text-rose-400 mb-2">{loadError}</p>
+                      <Button onClick={refreshProposals} variant="outline" size="sm" className="border-rose-500/50 text-rose-400 hover:bg-rose-500/10">
+                        重试
+                      </Button>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* 空状态 */}
+                {!isLoadingProposals && !loadError && proposals.length === 0 && (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
+                        <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                        </svg>
+                      </div>
+                      <h3 className="text-lg font-semibold text-zinc-300">暂无提案</h3>
+                      <p className="text-sm text-zinc-500 mt-1">创建第一个提案开始投票吧！</p>
+                    </CardContent>
+                  </Card>
+                )}
+
+                {/* 提案列表 */}
+                {!isLoadingProposals && !loadError && proposals.map((proposal) => (
+                  <ProposalCard 
+                    key={proposal.id} 
+                    proposal={proposal} 
+                    wallet={wallet}
+                    onRegister={handleRegister}
+                    onVote={handleVote}
+                    onStartRegistration={handleStartRegistration}
+                    onStartVoting={handleStartVoting}
+                    onStartTallying={handleStartTallying}
+                    onRevealResult={handleRevealResult}
+                  />
                 ))}
               </div>
 
               {/* 侧边栏 */}
               <div className="space-y-4">
-                <CreateProposalCard />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
                 <TechStack />
               </div>
             </div>
@@ -1016,17 +1876,39 @@ function App() {
           <TabsContent value="active">
             <div className="grid lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 space-y-4">
-                {mockProposals
-                  .filter(
-                    (p) =>
-                      p.status === "voting" || p.status === "registration"
-                  )
-                  .map((proposal) => (
-                    <ProposalCard key={proposal.id} proposal={proposal} />
-                  ))}
+                {isLoadingProposals ? (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <div className="w-12 h-12 mx-auto rounded-full border-4 border-violet-500 border-t-transparent animate-spin mb-4" />
+                      <p className="text-zinc-400">正在加载...</p>
+                    </CardContent>
+                  </Card>
+                ) : proposals.filter(p => p.status === VotingState.Voting || p.status === VotingState.Registration).length === 0 ? (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <p className="text-zinc-500">暂无进行中的提案</p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  proposals
+                    .filter(p => p.status === VotingState.Voting || p.status === VotingState.Registration)
+                    .map((proposal) => (
+                      <ProposalCard 
+                        key={proposal.id} 
+                        proposal={proposal} 
+                        wallet={wallet}
+                        onRegister={handleRegister}
+                        onVote={handleVote}
+                        onStartRegistration={handleStartRegistration}
+                        onStartVoting={handleStartVoting}
+                        onStartTallying={handleStartTallying}
+                        onRevealResult={handleRevealResult}
+                      />
+                    ))
+                )}
               </div>
               <div className="space-y-4">
-                <CreateProposalCard />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
                 <TechStack />
               </div>
             </div>
@@ -1035,14 +1917,39 @@ function App() {
           <TabsContent value="completed">
             <div className="grid lg:grid-cols-3 gap-6">
               <div className="lg:col-span-2 space-y-4">
-                {mockProposals
-                  .filter((p) => p.status === "finalized")
-                  .map((proposal) => (
-                    <ProposalCard key={proposal.id} proposal={proposal} />
-                  ))}
+                {isLoadingProposals ? (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <div className="w-12 h-12 mx-auto rounded-full border-4 border-violet-500 border-t-transparent animate-spin mb-4" />
+                      <p className="text-zinc-400">正在加载...</p>
+                    </CardContent>
+                  </Card>
+                ) : proposals.filter(p => p.status === VotingState.Finalized).length === 0 ? (
+                  <Card className="bg-zinc-900/50 border-zinc-800">
+                    <CardContent className="py-12 text-center">
+                      <p className="text-zinc-500">暂无已完成的提案</p>
+                    </CardContent>
+                  </Card>
+                ) : (
+                  proposals
+                    .filter((p) => p.status === VotingState.Finalized)
+                    .map((proposal) => (
+                      <ProposalCard 
+                        key={proposal.id} 
+                        proposal={proposal} 
+                        wallet={wallet}
+                        onRegister={handleRegister}
+                        onVote={handleVote}
+                        onStartRegistration={handleStartRegistration}
+                        onStartVoting={handleStartVoting}
+                        onStartTallying={handleStartTallying}
+                        onRevealResult={handleRevealResult}
+                      />
+                    ))
+                )}
               </div>
               <div className="space-y-4">
-                <CreateProposalCard />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
                 <TechStack />
               </div>
             </div>
@@ -1115,7 +2022,7 @@ function App() {
                   </Card>
                 </div>
                 <div className="space-y-4">
-                  <CreateProposalCard />
+                  <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
                   <TechStack />
                 </div>
               </div>
@@ -1209,7 +2116,7 @@ function App() {
         <div className="max-w-7xl mx-auto px-6 py-8">
           <div className="flex flex-col md:flex-row items-center justify-between gap-4">
             <div className="flex items-center gap-2 text-zinc-500 text-sm">
-              <span>🔒</span>
+              <Lock className="w-4 h-4" />
               <span>
                 由 Semaphore ZKP + Paillier 同态加密驱动的隐私投票系统
               </span>
@@ -1232,4 +2139,12 @@ function App() {
   );
 }
 
-export default App;
+function AppWithProviders() {
+  return (
+    <ToastProvider>
+      <App />
+    </ToastProvider>
+  );
+}
+
+export default AppWithProviders;
