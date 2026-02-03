@@ -146,7 +146,7 @@ export const VotingFactoryABI = [
   "event ResultRevealed(uint256 indexed votingId, uint256 winningOption)",
   
   // 写入函数
-  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance) params) returns (uint256)",
+  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, bool enableWhitelist, address[] whitelist) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
   "function startVoting(uint256 votingId)",

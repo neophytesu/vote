@@ -51,6 +51,7 @@ contract VotingFactory is IVotingTypes {
         uint256 quorum;
         uint256 createdAt;
         bool autoAdvance;  // 是否自动推进状态
+        uint16 visibilityBitmap;  // 可见性配置位图 (每项2位: 0=隐藏,1=创建者,2=参与者,3=公开)
     }
 
     /// @notice 投票详情结构（包含聚合数据）
@@ -74,6 +75,7 @@ contract VotingFactory is IVotingTypes {
         bool resultRevealed;
         uint256 createdAt;
         bool autoAdvance;  // 是否自动推进状态
+        uint16 visibilityBitmap;  // 可见性配置位图
     }
 
     /// @notice 创建投票参数结构
@@ -89,6 +91,9 @@ contract VotingFactory is IVotingTypes {
         uint256 votingEnd;
         uint256 quorum;
         bool autoAdvance;  // 是否自动推进状态
+        uint16 visibilityBitmap;  // 可见性配置位图
+        bool enableWhitelist;  // 是否启用白名单
+        address[] whitelist;   // 白名单地址列表（预注册，可直接投票）
     }
 
     // ==================== 模块化中心合约 ====================
@@ -265,6 +270,7 @@ contract VotingFactory is IVotingTypes {
         voting.quorum = params.quorum;
         voting.createdAt = block.timestamp;
         voting.autoAdvance = params.autoAdvance;
+        voting.visibilityBitmap = params.visibilityBitmap;
 
         // 存储选项
         for (uint256 i = 0; i < params.options.length; i++) {
@@ -273,6 +279,12 @@ contract VotingFactory is IVotingTypes {
 
         // 初始化计票中心的选项数量
         votingCenter.initializeProposal(votingId, params.options.length);
+
+        // 如果启用白名单，批量预注册白名单地址
+        if (params.enableWhitelist && params.whitelist.length > 0) {
+            require(params.whitelist.length <= 200, "Whitelist too large (max 200)");
+            registrationCenter.batchRegisterVoters(votingId, params.whitelist);
+        }
 
         // 记录创建者的投票
         creatorVotings[msg.sender].push(votingId);
@@ -536,7 +548,8 @@ contract VotingFactory is IVotingTypes {
             voteCounts: voteCounts,
             resultRevealed: resultRevealed,
             createdAt: info.createdAt,
-            autoAdvance: info.autoAdvance
+            autoAdvance: info.autoAdvance,
+            visibilityBitmap: info.visibilityBitmap
         });
     }
 
@@ -698,6 +711,47 @@ contract VotingFactory is IVotingTypes {
         returns (bool) 
     {
         return votingCenter.hasVoterVoted(votingId, voter);
+    }
+
+    /**
+     * @notice 获取投票记录 - 代理到 VotingCenter
+     * @param votingId 投票ID
+     * @return voters 投票者地址数组
+     * @return optionIndexes 选项索引数组
+     * @return timestamps 时间戳数组
+     */
+    function getVoteRecords(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (
+            address[] memory voters,
+            uint256[] memory optionIndexes,
+            uint256[] memory timestamps
+        )
+    {
+        return votingCenter.getVoteRecords(votingId);
+    }
+
+    /**
+     * @notice 获取特定选民的投票选择 - 代理到 VotingCenter
+     * @param votingId 投票ID
+     * @param voter 选民地址
+     * @return optionIndex 投票选项
+     * @return timestamp 投票时间
+     * @return voted 是否已投票
+     */
+    function getVoterChoice(uint256 votingId, address voter)
+        external
+        view
+        votingExists(votingId)
+        returns (
+            uint256 optionIndex,
+            uint256 timestamp,
+            bool voted
+        )
+    {
+        return votingCenter.getVoterChoice(votingId, voter);
     }
 
     // ==================== 管理函数 ====================

@@ -22,6 +22,12 @@ import { ToastProvider, useToast } from "@/components/ui/toast";
 import { useWallet, getChainName } from "@/hooks/useWallet";
 import type { WalletState } from "@/hooks/useWallet";
 import { VotingState, VotingRule, PrivacyLevel } from "@/contracts/abi";
+import {
+  encodeVisibilityBitmap,
+  decodeVisibilityBitmap,
+  checkVisibility,
+  VisibilityLevel,
+} from "@/contracts/visibility";
 import { useVotingFactory, type VotingDetails } from "@/hooks/useVotingFactory";
 import { useStatisticsCenter } from "@/hooks/useStatisticsCenter";
 import {
@@ -38,6 +44,13 @@ import {
   TreeDeciduous,
   BarChart3,
   Hash,
+  Globe,
+  ImageIcon,
+  Coins,
+  Users,
+  UserCheck,
+  Upload,
+  X,
 } from "lucide-react";
 
 // 本地提案接口（扩展合约数据，添加用户状态）
@@ -60,6 +73,7 @@ interface LocalProposal {
   registrationEnd: number;   // 注册结束时间
   votingStart: number;       // 投票开始时间
   votingEnd: number;         // 投票结束时间
+  visibilityBitmap: number;  // 可见性配置位图
 }
 
 // 将合约数据转换为本地提案格式
@@ -83,6 +97,7 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     registrationEnd: voting.registrationEnd,
     votingStart: voting.votingStart,
     votingEnd: voting.votingEnd,
+    visibilityBitmap: voting.visibilityBitmap,
   };
 }
 
@@ -599,6 +614,13 @@ function StatsCards({ globalStats, privacyStats, isLoading }: StatsCardsProps) {
   );
 }
 
+// 投票记录类型
+interface VoteRecord {
+  voter: string;
+  optionIndex: number;
+  timestamp: number;
+}
+
 interface ProposalCardProps {
   proposal: LocalProposal;
   wallet: WalletState;
@@ -608,6 +630,8 @@ interface ProposalCardProps {
   onStartVoting: (proposalId: number) => void;
   onStartTallying: (proposalId: number) => void;
   onRevealResult: (proposalId: number) => void;
+  onLoadVoteRecords?: (proposalId: number) => Promise<VoteRecord[] | null>;
+  onLoadRegisteredVoters?: (proposalId: number) => Promise<string[] | null>;
 }
 
 // 选项颜色配置
@@ -620,7 +644,11 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
+  const [showVoteDetails, setShowVoteDetails] = useState(false);
+  const [voteRecords, setVoteRecords] = useState<VoteRecord[]>([]);
+  const [notVotedAddresses, setNotVotedAddresses] = useState<string[]>([]);
+  const [loadingRecords, setLoadingRecords] = useState(false);
   const status = statusConfig[proposal.status];
   const totalVotes = proposal.voteCounts.reduce((a, b) => a + b, 0);
   const participationRate =
@@ -639,6 +667,19 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
 
   // 判断当前用户是否为创建者
   const isCreator = wallet.address?.toLowerCase() === proposal.creator?.toLowerCase();
+  
+  // 判断当前用户是否为参与者（已注册选民）
+  const isParticipant = proposal.isRegistered ?? false;
+
+  // 解码可见性配置
+  const visibilityConfig = decodeVisibilityBitmap(proposal.visibilityBitmap || 0);
+  
+  // 检查各项可见性权限
+  const canViewVoteCounts = checkVisibility(visibilityConfig.voteCounts, isCreator, isParticipant);
+  const canViewVoteDetails = checkVisibility(visibilityConfig.voteDetails, isCreator, isParticipant);
+  const canViewProgress = checkVisibility(visibilityConfig.progress, isCreator, isParticipant);
+  const canViewVoterList = checkVisibility(visibilityConfig.voterList, isCreator, isParticipant);
+  const canViewResult = checkVisibility(visibilityConfig.result, isCreator, isParticipant);
   
   // 判断是否可以推进状态
   // 自动模式：任何人可推进；手动模式：仅创建者可推进
@@ -707,49 +748,74 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
           )}
         </div>
 
-        {/* 投票进度 - 支持多选项 */}
+        {/* 投票进度 - 支持多选项，根据可见性配置控制显示 */}
         {proposal.status === VotingState.Voting || proposal.status === VotingState.Finalized ? (
           <div className="space-y-3">
-            {/* 各选项票数 */}
-            <div className="space-y-2">
-              {proposal.options.map((option, index) => {
-                const color = optionColorConfig[index % optionColorConfig.length];
-                const votes = proposal.voteCounts[index] || 0;
-                const percentage = optionPercentages[index];
-                const isLeading = index === leadingIndex && totalVotes > 0;
-                
-                return (
-                  <div key={index} className="space-y-1">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className={`${color.text} flex items-center gap-1.5`}>
-                        {isLeading && <Crown className="w-3 h-3 inline mr-1" />}
-                        {option}
-                      </span>
-                      <span className="text-zinc-400">
-                        {votes.toLocaleString()} ({percentage.toFixed(1)}%)
-                      </span>
+            {/* 各选项票数 - 根据可见性控制 */}
+            {(proposal.status === VotingState.Finalized ? canViewResult : canViewVoteCounts) ? (
+              <div className="space-y-2">
+                {proposal.options.map((option, index) => {
+                  const color = optionColorConfig[index % optionColorConfig.length];
+                  const votes = proposal.voteCounts[index] || 0;
+                  const percentage = optionPercentages[index];
+                  const isLeading = index === leadingIndex && totalVotes > 0;
+                  
+                  return (
+                    <div key={index} className="space-y-1">
+                      <div className="flex justify-between items-center text-sm">
+                        <span className={`${color.text} flex items-center gap-1.5`}>
+                          {isLeading && <Crown className="w-3 h-3 inline mr-1" />}
+                          {option}
+                        </span>
+                        <span className="text-zinc-400">
+                          {votes.toLocaleString()} ({percentage.toFixed(1)}%)
+                        </span>
+                      </div>
+                      <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                        <div
+                          className={`h-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
+                          style={{ width: `${percentage}%` }}
+                        />
+                      </div>
                     </div>
-                    <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
-                        style={{ width: `${percentage}%` }}
-                      />
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="py-4 text-center">
+                <EyeOff className="w-5 h-5 mx-auto text-zinc-600 mb-2" />
+                <p className="text-sm text-zinc-500">
+                  {proposal.status === VotingState.Finalized ? "结果未公开" : "票数未公开"}
+                </p>
+                <p className="text-xs text-zinc-600 mt-1">
+                  {isCreator ? "" : isParticipant ? "仅创建者可见" : "仅参与者可见"}
+                </p>
+              </div>
+            )}
             
-            {/* 参与率 */}
-            <p className="text-xs text-zinc-500 text-center pt-1">
-              参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
-            </p>
+            {/* 参与率 - 根据进度可见性控制 */}
+            {canViewProgress ? (
+              <p className="text-xs text-zinc-500 text-center pt-1">
+                参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
+              </p>
+            ) : (
+              <p className="text-xs text-zinc-600 text-center pt-1">
+                进度信息未公开
+              </p>
+            )}
           </div>
         ) : (
           <div className="py-2">
-            <p className="text-sm text-zinc-500 text-center">
-              已注册选民: {proposal.totalVoters.toLocaleString()}
-            </p>
+            {/* 选民数量 - 根据选民列表可见性控制 */}
+            {canViewVoterList ? (
+              <p className="text-sm text-zinc-500 text-center">
+                已注册选民: {proposal.totalVoters.toLocaleString()}
+              </p>
+            ) : (
+              <p className="text-sm text-zinc-600 text-center flex items-center justify-center gap-2">
+                <EyeOff className="w-4 h-4" /> 选民信息未公开
+              </p>
+            )}
           </div>
         )}
 
@@ -770,6 +836,126 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
           阶段 {status.step}/5:{" "}
           {["创建", "注册", "投票", "计票", "完成"][status.step - 1]}
         </p>
+
+        {/* 投票内容（谁投了什么）- 根据可见性控制，使用弹窗展示 */}
+        {(proposal.status === VotingState.Voting || proposal.status === VotingState.Finalized) && (
+          <div className="pt-2 border-t border-zinc-800">
+            {canViewVoteDetails ? (
+              <Dialog open={showVoteDetails} onOpenChange={setShowVoteDetails}>
+                <DialogTrigger asChild>
+                  <button
+                    onClick={async () => {
+                      if (voteRecords.length === 0 && !loadingRecords) {
+                        setLoadingRecords(true);
+                        const records = onLoadVoteRecords ? await onLoadVoteRecords(proposal.id) : null;
+                        if (records) setVoteRecords(records);
+                        if (onLoadRegisteredVoters) {
+                          const registered = await onLoadRegisteredVoters(proposal.id);
+                          if (registered) {
+                            const votedSet = new Set((records || []).map((r) => r.voter.toLowerCase()));
+                            setNotVotedAddresses(registered.filter((addr) => !votedSet.has(addr.toLowerCase())));
+                          }
+                        }
+                        setLoadingRecords(false);
+                      }
+                    }}
+                    className="w-full text-xs text-zinc-400 hover:text-zinc-300 flex items-center justify-center gap-1 py-1 transition-colors"
+                  >
+                    <Eye className="w-3 h-3" />
+                    查看投票详情
+                    {loadingRecords && <span className="ml-1 animate-spin">⏳</span>}
+                  </button>
+                </DialogTrigger>
+                <DialogContent className="bg-zinc-900 border-zinc-800 max-w-lg max-h-[80vh] overflow-hidden flex flex-col">
+                  <DialogHeader>
+                    <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                      <Eye className="w-5 h-5 text-violet-400" />
+                      投票详情 - {proposal.title}
+                    </DialogTitle>
+                    <DialogDescription className="text-zinc-400">
+                      共 {voteRecords.length} 人已投票，{notVotedAddresses.length} 人未投票
+                    </DialogDescription>
+                  </DialogHeader>
+                  
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-2">
+                    {voteRecords.length > 0 ? (
+                      voteRecords.map((record, idx) => {
+                        const color = optionColorConfig[record.optionIndex % optionColorConfig.length];
+                        const optionName = proposal.options[record.optionIndex] || `选项${record.optionIndex + 1}`;
+                        const voteTime = new Date(record.timestamp * 1000).toLocaleString();
+                        return (
+                          <div 
+                            key={`voted-${idx}`} 
+                            className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
+                          >
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-zinc-300 font-mono break-all">
+                                {record.voter}
+                              </p>
+                              <p className="text-xs text-zinc-500 mt-1">
+                                投票时间: {voteTime}
+                              </p>
+                            </div>
+                            <div className={`shrink-0 px-3 py-1.5 rounded-lg bg-gradient-to-r ${color.gradient} text-white text-sm font-medium`}>
+                              {optionName}
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : null}
+                    {/* 未投票的人 - 与上面卡片样式一致 */}
+                    {notVotedAddresses.length > 0 && notVotedAddresses.map((addr, idx) => (
+                      <div
+                        key={`notvoted-${idx}`}
+                        className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
+                      >
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm text-zinc-300 font-mono break-all">
+                            {addr}
+                          </p>
+                          <p className="text-xs text-zinc-500 mt-1">
+                            —
+                          </p>
+                        </div>
+                        <div className="shrink-0 px-3 py-1.5 rounded-lg bg-zinc-600 text-zinc-200 text-sm font-medium">
+                          未投票
+                        </div>
+                      </div>
+                    ))}
+                    {voteRecords.length === 0 && notVotedAddresses.length === 0 && !loadingRecords && (
+                      <div className="py-8 text-center">
+                        <p className="text-zinc-500">暂无投票记录</p>
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* 统计摘要 */}
+                  {voteRecords.length > 0 && (
+                    <div className="pt-3 border-t border-zinc-800 mt-3">
+                      <p className="text-xs text-zinc-500 text-center">
+                        各选项统计：
+                        {proposal.options.map((opt, idx) => {
+                          const count = voteRecords.filter(r => r.optionIndex === idx).length;
+                          const color = optionColorConfig[idx % optionColorConfig.length];
+                          return (
+                            <span key={idx} className={`ml-2 ${color.text}`}>
+                              {opt}: {count}票
+                            </span>
+                          );
+                        })}
+                        <span className="ml-2 text-zinc-400">未投票: {notVotedAddresses.length}人</span>
+                      </p>
+                    </div>
+                  )}
+                </DialogContent>
+              </Dialog>
+            ) : (
+              <p className="text-xs text-zinc-600 text-center flex items-center justify-center gap-1">
+                <EyeOff className="w-3 h-3" /> 投票详情未公开
+              </p>
+            )}
+          </div>
+        )}
 
         {/* 操作按钮 */}
         <div className="flex flex-wrap gap-2 pt-2">
@@ -1069,6 +1255,9 @@ interface CreateProposalData {
   votingStart: number;
   votingEnd: number;
   autoAdvance: boolean;  // 是否自动推进
+  visibilityBitmap: number;  // 可见性配置位图
+  enableWhitelist: boolean;  // 是否启用白名单
+  whitelist: string[];  // 白名单地址列表
 }
 
 interface CreateProposalCardProps {
@@ -1088,6 +1277,32 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
   const [options, setOptions] = useState(["赞成", "反对"]);
   const [rule, setRule] = useState<number>(VotingRule.SimpleMajority);
   const [privacy, setPrivacy] = useState<number>(PrivacyLevel.Public);
+  const [registrationRule, setRegistrationRule] = useState<number>(0); // 0=开放, 1=审核, 2=NFT, 3=Token
+  const [enableWhitelist, setEnableWhitelist] = useState(false); // 是否启用白名单
+  const [whitelist, setWhitelist] = useState<string[]>([]); // 白名单地址列表
+  const [whitelistInput, setWhitelistInput] = useState(""); // 白名单输入框
+  // 信息公开对象：0=不公开, 1=仅创建者, 2=仅参与者, 3=所有人
+  const [voteCountsVisibility, setVoteCountsVisibility] = useState<number>(1);
+  const [voteDetailsVisibility, setVoteDetailsVisibility] = useState<number>(1);
+  const [voterListVisibility, setVoterListVisibility] = useState<number>(1);
+  const [resultVisibility, setResultVisibility] = useState<number>(3);
+  const [progressVisibility, setProgressVisibility] = useState<number>(1);
+
+  // 可见性配置 - 统一定义
+  const visibilityOptions = [
+    { value: 0, label: "不公开", icon: EyeOff },
+    { value: 1, label: "创建者", icon: Crown },
+    { value: 2, label: "参与者", icon: Users },
+    { value: 3, label: "所有人", icon: Globe },
+  ];
+
+  const visibilitySettings = [
+    { key: "voteCounts", label: "实时票数", value: voteCountsVisibility, setter: setVoteCountsVisibility },
+    { key: "voteDetails", label: "投票内容", value: voteDetailsVisibility, setter: setVoteDetailsVisibility },
+    { key: "voterList", label: "选民列表", value: voterListVisibility, setter: setVoterListVisibility },
+    { key: "progress", label: "投票进度", value: progressVisibility, setter: setProgressVisibility },
+    { key: "result", label: "最终结果", value: resultVisibility, setter: setResultVisibility },
+  ];
   
   // 时间配置（单位：分钟）
   const [registrationDelay, setRegistrationDelay] = useState(1);     // 注册开始延迟（分钟）
@@ -1101,11 +1316,40 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     setOptions(["赞成", "反对"]);
     setRule(VotingRule.SimpleMajority);
     setPrivacy(PrivacyLevel.Public);
+    setRegistrationRule(0);
+    setEnableWhitelist(false);
+    setWhitelist([]);
+    setWhitelistInput("");
+    setVoteCountsVisibility(1);
+    setVoteDetailsVisibility(1);
+    setVoterListVisibility(1);
+    setResultVisibility(3);
+    setProgressVisibility(1);
     setRegistrationDelay(1);
     setRegistrationDuration(5);
     setVotingDuration(60);
     setAutoAdvance(true);
     setStep(1);
+  };
+
+  // 处理 Enter 键跳转到下一步
+  const handleKeyDown = (e: React.KeyboardEvent, currentStep: number, canProceed: boolean) => {
+    // 如果是 textarea，Shift+Enter 换行，只有纯 Enter 才触发下一步
+    if (e.target instanceof HTMLTextAreaElement && !e.shiftKey) {
+      if (e.key === "Enter" && canProceed) {
+        e.preventDefault();
+        if (currentStep < 3) {
+          setStep(currentStep + 1);
+        }
+      }
+    } else if (e.target instanceof HTMLInputElement) {
+      if (e.key === "Enter" && canProceed) {
+        e.preventDefault();
+        if (currentStep < 3) {
+          setStep(currentStep + 1);
+        }
+      }
+    }
   };
 
   const handleAddOption = () => {
@@ -1141,6 +1385,15 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     const voteStart = regEnd;
     const voteEnd = voteStart + votingDuration * 60;
 
+    // 将可见性设置编码为位图
+    const visibilityBitmap = encodeVisibilityBitmap({
+      voteCounts: voteCountsVisibility as VisibilityLevel,
+      voteDetails: voteDetailsVisibility as VisibilityLevel,
+      voterList: voterListVisibility as VisibilityLevel,
+      progress: progressVisibility as VisibilityLevel,
+      result: resultVisibility as VisibilityLevel,
+    });
+
     const newProposal: CreateProposalData = {
       title,
       description,
@@ -1154,6 +1407,9 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       votingStart: voteStart,
       votingEnd: voteEnd,
       autoAdvance,
+      visibilityBitmap,
+      enableWhitelist,
+      whitelist,
     };
 
     console.log("开始创建投票，参数:", newProposal);
@@ -1204,7 +1460,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       </Card>
 
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
-        <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-lg max-h-[90vh] overflow-y-auto">
+        <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="text-zinc-100 flex items-center gap-2">
               <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-sm">
@@ -1239,6 +1495,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                     type="text"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
+                    onKeyDown={(e) => handleKeyDown(e, 1, !!(title.trim() && description.trim()))}
                     placeholder="例如：社区资金分配提案"
                     className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors"
                   />
@@ -1248,7 +1505,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                   <textarea
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
-                    placeholder="详细描述提案内容..."
+                    onKeyDown={(e) => handleKeyDown(e, 1, !!(title.trim() && description.trim()))}
+                    placeholder="详细描述提案内容（Shift+Enter 换行，Enter 下一步）"
                     rows={4}
                     className="w-full px-4 py-3 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors resize-none"
                   />
@@ -1272,6 +1530,13 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                   <div className="grid grid-cols-2 gap-3">
                     <button
                       onClick={() => setOptions(["赞成", "反对"])}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          e.preventDefault();
+                          setOptions(["赞成", "反对"]);
+                          setStep(3);
+                        }
+                      }}
                       className={`p-3 rounded-xl border text-left transition-all ${
                         options.length === 2 && options[0] === "赞成" && options[1] === "反对"
                           ? "border-violet-500 bg-violet-500/10"
@@ -1284,7 +1549,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                         </svg>
                         <span className="text-sm font-medium text-zinc-200">赞成/反对</span>
                       </div>
-                      <p className="text-xs text-zinc-500">适用于简单的是否决策</p>
+                      <p className="text-xs text-zinc-500">适用于简单的是否决策（Enter 直接下一步）</p>
                     </button>
                     <button
                       onClick={() => setOptions(["", ""])}
@@ -1316,6 +1581,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                         type="text"
                         value={option}
                         onChange={(e) => handleOptionChange(index, e.target.value)}
+                        onKeyDown={(e) => handleKeyDown(e, 2, !options.some(o => !o.trim()))}
                         placeholder={`选项 ${index + 1}`}
                         className="flex-1 px-4 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors"
                       />
@@ -1361,65 +1627,233 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
             {step === 3 && (
               <>
                 <div className="space-y-4">
-                  {/* 投票规则 */}
+                  {/* 投票规则和隐私级别 - 并排布局 */}
+                  <div className="grid grid-cols-2 gap-4">
+                    {/* 投票规则 */}
+                    <div className="space-y-2">
+                      <label className="text-sm text-zinc-300">投票规则</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
+                          { value: VotingRule.Weighted, label: "加权投票", desc: "按Token数量加权" },
+                          { value: VotingRule.Quadratic, label: "二次方投票", desc: "成本=票数²" },
+                          { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序" },
+                        ].map((r) => (
+                          <button
+                            key={r.value}
+                            onClick={() => setRule(r.value)}
+                            className={`p-2 rounded-lg border-2 text-left transition-all ${
+                              rule === r.value
+                                ? "border-violet-500 bg-violet-500/10"
+                                : "border-zinc-800 hover:border-zinc-700"
+                            }`}
+                          >
+                            <p className="font-medium text-sm text-zinc-100">{r.label}</p>
+                            <p className="text-xs text-zinc-500">{r.desc}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* 隐私级别 */}
+                    <div className="space-y-2">
+                      <label className="text-sm text-zinc-300">隐私级别</label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { value: PrivacyLevel.Public, label: "公开投票", icon: Eye },
+                          { value: PrivacyLevel.Anonymous, label: "匿名投票", icon: EyeOff },
+                          { value: PrivacyLevel.Encrypted, label: "加密投票", icon: Lock },
+                          { value: PrivacyLevel.FullPrivacy, label: "完全隐私", icon: ShieldCheck },
+                        ].map((p) => (
+                          <button
+                            key={p.value}
+                            onClick={() => setPrivacy(p.value)}
+                            className={`p-2 rounded-lg border-2 text-left transition-all ${
+                              privacy === p.value
+                                ? "border-fuchsia-500 bg-fuchsia-500/10"
+                                : "border-zinc-800 hover:border-zinc-700"
+                            }`}
+                          >
+                            <p.icon className="w-4 h-4 text-zinc-300" />
+                            <p className="font-medium text-sm text-zinc-100 mt-1">{p.label}</p>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 信息公开设置 - 配置驱动 */}
+                  <div className="p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                    <p className="text-sm font-medium text-zinc-300 flex items-center gap-2 mb-3">
+                      <Eye className="w-4 h-4" /> 信息公开设置
+                    </p>
+                    
+                    {/* 表头 - 使用 visibilityOptions 配置 */}
+                    <div className="grid grid-cols-5 gap-2 mb-2 text-center">
+                      <div className="text-xs text-zinc-500">信息类型</div>
+                      {visibilityOptions.map((opt) => (
+                        <div key={opt.value} className="text-xs text-zinc-500 flex items-center justify-center gap-1">
+                          <opt.icon className="w-3 h-3" /> {opt.label}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* 可见性设置行 - 使用 visibilitySettings 配置 */}
+                    <div className="space-y-2">
+                      {visibilitySettings.map((item) => (
+                        <div key={item.key} className="grid grid-cols-5 gap-2 items-center">
+                          <div className="text-sm text-zinc-300">{item.label}</div>
+                          {visibilityOptions.map((opt) => (
+                            <button
+                              key={opt.value}
+                              onClick={() => item.setter(opt.value)}
+                              className={`p-2 rounded-lg border transition-all ${
+                                item.value === opt.value
+                                  ? "border-emerald-500 bg-emerald-500/20"
+                                  : "border-zinc-700 hover:border-zinc-600 bg-zinc-800/50"
+                              }`}
+                            >
+                              <div className={`w-3 h-3 mx-auto rounded-full ${
+                                item.value === opt.value ? "bg-emerald-500" : "bg-zinc-600"
+                              }`} />
+                            </button>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 注册规则 */}
                   <div className="space-y-2">
-                    <label className="text-sm text-zinc-300">投票规则</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <label className="text-sm text-zinc-300">注册规则</label>
+                    <div className="grid grid-cols-4 gap-2">
                       {[
-                        { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
-                        { value: VotingRule.Weighted, label: "加权投票", desc: "按Token数量加权" },
-                        { value: VotingRule.Quadratic, label: "二次方投票", desc: "成本=票数²" },
-                        { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序" },
+                        { value: 0, label: "开放注册", desc: "任何人都可注册", icon: Globe },
+                        { value: 1, label: "创建者审核", desc: "需创建者批准", icon: UserCheck },
+                        { value: 2, label: "NFT 持有者", desc: "持有指定 NFT", icon: ImageIcon },
+                        { value: 3, label: "Token 持有者", desc: "持有指定 Token", icon: Coins },
                       ].map((r) => (
                         <button
                           key={r.value}
-                          onClick={() => setRule(r.value)}
-                          className={`p-3 rounded-xl border-2 text-left transition-all ${
-                            rule === r.value
-                              ? "border-violet-500 bg-violet-500/10"
+                          onClick={() => setRegistrationRule(r.value)}
+                          className={`p-2 rounded-lg border-2 text-left transition-all ${
+                            registrationRule === r.value
+                              ? "border-cyan-500 bg-cyan-500/10"
                               : "border-zinc-800 hover:border-zinc-700"
                           }`}
                         >
-                          <p className="font-medium text-sm text-zinc-100">{r.label}</p>
+                          <r.icon className="w-4 h-4 text-zinc-300" />
+                          <p className="font-medium text-sm text-zinc-100 mt-1">{r.label}</p>
                           <p className="text-xs text-zinc-500">{r.desc}</p>
                         </button>
                       ))}
                     </div>
                   </div>
 
-                  {/* 隐私级别 */}
+                  {/* 白名单开关与配置 - 独立于注册规则 */}
                   <div className="space-y-2">
-                    <label className="text-sm text-zinc-300">隐私级别</label>
-                    <div className="grid grid-cols-2 gap-2">
-                      {[
-                        { value: PrivacyLevel.Public, label: "公开投票", icon: Eye },
-                        { value: PrivacyLevel.Anonymous, label: "匿名投票", icon: EyeOff },
-                        { value: PrivacyLevel.Encrypted, label: "加密投票", icon: Lock },
-                        { value: PrivacyLevel.FullPrivacy, label: "完全隐私", icon: ShieldCheck },
-                      ].map((p) => (
-                        <button
-                          key={p.value}
-                          onClick={() => setPrivacy(p.value)}
-                          className={`p-3 rounded-xl border-2 text-left transition-all ${
-                            privacy === p.value
-                              ? "border-fuchsia-500 bg-fuchsia-500/10"
-                              : "border-zinc-800 hover:border-zinc-700"
+                    <div className="flex items-center justify-between">
+                      <label className="text-sm text-zinc-300 flex items-center gap-2">
+                        <Users className="w-4 h-4" /> 白名单限制
+                      </label>
+                      <button
+                        onClick={() => setEnableWhitelist(!enableWhitelist)}
+                        className={`relative w-11 h-6 rounded-full transition-colors ${
+                          enableWhitelist ? "bg-cyan-500" : "bg-zinc-700"
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                            enableWhitelist ? "left-6" : "left-1"
                           }`}
-                        >
-                          <p.icon className="w-5 h-5 text-zinc-300" />
-                          <p className="font-medium text-sm text-zinc-100 mt-1">{p.label}</p>
-                        </button>
-                      ))}
+                        />
+                      </button>
                     </div>
+                    <p className="text-xs text-zinc-500">
+                      启用后，白名单内地址可无视注册规则参与投票
+                    </p>
                   </div>
 
-                  {/* 推进模式 - 放在时间配置之前 */}
+                  {/* 白名单地址导入 - 启用白名单时显示 */}
+                  {enableWhitelist && (
+                    <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-cyan-500/30">
+                      <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                        <Upload className="w-4 h-4" /> 白名单地址导入
+                      </p>
+                      
+                      {/* 输入区域 */}
+                      <div className="space-y-2">
+                        <textarea
+                          value={whitelistInput}
+                          onChange={(e) => setWhitelistInput(e.target.value)}
+                          placeholder="输入钱包地址，每行一个或用逗号分隔&#10;例如：&#10;0x1234...&#10;0x5678..."
+                          rows={4}
+                          className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none transition-colors resize-none text-sm font-mono"
+                        />
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={() => {
+                              const addresses = whitelistInput
+                                .split(/[\n,]/)
+                                .map(a => a.trim())
+                                .filter(a => a.length > 0 && a.startsWith("0x"));
+                              const uniqueAddresses = [...new Set([...whitelist, ...addresses])];
+                              setWhitelist(uniqueAddresses);
+                              setWhitelistInput("");
+                            }}
+                            disabled={!whitelistInput.trim()}
+                            className="flex-1 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50"
+                          >
+                            添加地址
+                          </Button>
+                          <Button
+                            onClick={() => setWhitelist([])}
+                            disabled={whitelist.length === 0}
+                            variant="outline"
+                            className="border-zinc-700 text-zinc-400 hover:text-rose-400 hover:border-rose-500 disabled:opacity-50"
+                          >
+                            清空
+                          </Button>
+                        </div>
+                      </div>
+
+                      {/* 已添加的地址列表 */}
+                      {whitelist.length > 0 && (
+                        <div className="space-y-2">
+                          <p className={`text-xs ${whitelist.length > 200 ? "text-rose-400" : "text-zinc-400"}`}>
+                            已添加 {whitelist.length} 个地址
+                            {whitelist.length > 200 && " (超过 200 限制，请减少)"}
+                          </p>
+                          <div className="max-h-32 overflow-y-auto space-y-1 pr-1">
+                            {whitelist.map((addr, idx) => (
+                              <div
+                                key={idx}
+                                className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 group"
+                              >
+                                <span className="text-xs font-mono text-zinc-300 truncate flex-1">
+                                  {addr.slice(0, 10)}...{addr.slice(-8)}
+                                </span>
+                                <button
+                                  onClick={() => setWhitelist(whitelist.filter((_, i) => i !== idx))}
+                                  className="ml-2 p-1 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 推进模式 */}
                   <div className="space-y-2">
                     <label className="text-sm text-zinc-300">状态推进模式</label>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid grid-cols-2 gap-3">
                       <button
                         onClick={() => setAutoAdvance(true)}
-                        className={`p-3 rounded-xl border-2 text-left transition-all ${
+                        className={`p-2 rounded-lg border-2 text-left transition-all ${
                           autoAdvance
                             ? "border-emerald-500 bg-emerald-500/10"
                             : "border-zinc-800 hover:border-zinc-700"
@@ -1430,14 +1864,14 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                       </button>
                       <button
                         onClick={() => setAutoAdvance(false)}
-                        className={`p-3 rounded-xl border-2 text-left transition-all ${
+                        className={`p-2 rounded-lg border-2 text-left transition-all ${
                           !autoAdvance
                             ? "border-amber-500 bg-amber-500/10"
                             : "border-zinc-800 hover:border-zinc-700"
                         }`}
                       >
                         <p className="font-medium text-sm text-zinc-100">手动推进</p>
-                        <p className="text-xs text-zinc-500">创建者随时可推进，无时间限制</p>
+                        <p className="text-xs text-zinc-500">创建者随时可推进</p>
                       </button>
                     </div>
                   </div>
@@ -1809,6 +2243,28 @@ function App() {
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  // 加载投票记录
+  const handleLoadVoteRecords = useCallback(async (proposalId: number): Promise<VoteRecord[] | null> => {
+    const result = await votingFactory.getVoteRecords(proposalId);
+    if (!result) return null;
+    
+    const records: VoteRecord[] = [];
+    for (let i = 0; i < result.voters.length; i++) {
+      records.push({
+        voter: result.voters[i],
+        optionIndex: result.optionIndexes[i],
+        timestamp: result.timestamps[i],
+      });
+    }
+    return records;
+  }, [votingFactory]);
+
+  // 加载已注册选民列表（用于投票详情中展示未投票的人）
+  const handleLoadRegisteredVoters = useCallback(async (proposalId: number): Promise<string[] | null> => {
+    const list = await votingFactory.getRegisteredVoters(proposalId);
+    return list && list.length > 0 ? list : null;
+  }, [votingFactory]);
+
   // 处理创建提案 - 调用真实合约
   const handleCreateProposal = useCallback(async (proposalData: CreateProposalData) => {
     if (!wallet.isConnected) {
@@ -1829,6 +2285,9 @@ function App() {
       votingEnd: proposalData.votingEnd,
       quorum: 0, // 无法定人数要求
       autoAdvance: proposalData.autoAdvance,
+      visibilityBitmap: proposalData.visibilityBitmap,
+      enableWhitelist: proposalData.enableWhitelist,
+      whitelist: proposalData.whitelist,
     });
 
     if (votingId !== null) {
@@ -1974,6 +2433,8 @@ function App() {
                     onStartVoting={handleStartVoting}
                     onStartTallying={handleStartTallying}
                     onRevealResult={handleRevealResult}
+                    onLoadVoteRecords={handleLoadVoteRecords}
+                        onLoadRegisteredVoters={handleLoadRegisteredVoters}
                   />
                 ))}
               </div>
@@ -2016,6 +2477,8 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onLoadVoteRecords={handleLoadVoteRecords}
+                        onLoadRegisteredVoters={handleLoadRegisteredVoters}
                       />
                     ))
                 )}
@@ -2057,6 +2520,8 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onLoadVoteRecords={handleLoadVoteRecords}
+                        onLoadRegisteredVoters={handleLoadRegisteredVoters}
                       />
                     ))
                 )}
@@ -2183,6 +2648,8 @@ function App() {
                             onStartVoting={handleStartVoting}
                             onStartTallying={handleStartTallying}
                             onRevealResult={handleRevealResult}
+                            onLoadVoteRecords={handleLoadVoteRecords}
+                            onLoadRegisteredVoters={handleLoadRegisteredVoters}
                           />
                         ))
                       )}

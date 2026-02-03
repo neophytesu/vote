@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-02T20:43:36.438Z
+ * 最后更新: 2026-02-03T12:57:47.356Z
  */
 
 export const VotingCoreABI = [
@@ -95,7 +95,7 @@ export const VotingFactoryABI = [
   "event ResultRevealed(uint256 indexed votingId, uint256 winningOption)",
   
   // 写入函数
-  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance) params) returns (uint256)",
+  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
   "function startVoting(uint256 votingId)",
@@ -105,18 +105,20 @@ export const VotingFactoryABI = [
   
   // 查询函数
   "function votingCount() view returns (uint256)",
-  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance))",
+  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap))",
   "function getAllVotingIds() view returns (uint256[])",
-  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance)[])",
+  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap)[])",
   "function getVotingsByCreator(address creator) view returns (uint256[])",
   "function getVotingsByVoter(address voter) view returns (uint256[])",
   "function getVotingOptions(uint256 votingId) view returns (string[])",
   "function getVotingResult(uint256 votingId) view returns (uint256[] voteCounts, uint256 winningOption, uint256 totalVotes)",
   "function getUserVotingStatus(uint256 votingId, address user) view returns (bool registered, bool voted)",
   "function getVotingState(uint256 votingId) view returns (uint8)",
-  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance)[])",
+  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap)[])",
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
+  "function getVoteRecords(uint256 votingId) view returns (address[] voters, uint256[] optionIndexes, uint256[] timestamps)",
+  "function getVoterChoice(uint256 votingId, address voter) view returns (uint256 optionIndex, uint256 timestamp, bool voted)",
 ] as const;
 
 /**
@@ -152,6 +154,97 @@ export const PrivacyLevel = {
   FullPrivacy: 3,
 } as const;
 export type PrivacyLevel = (typeof PrivacyLevel)[keyof typeof PrivacyLevel];
+
+/**
+ * 可见性级别
+ * 0 = 不公开（隐藏）
+ * 1 = 仅创建者
+ * 2 = 仅参与者（已注册的选民）
+ * 3 = 所有人（公开）
+ */
+export const VisibilityLevel = {
+  Hidden: 0,
+  CreatorOnly: 1,
+  ParticipantsOnly: 2,
+  Public: 3,
+} as const;
+export type VisibilityLevel = (typeof VisibilityLevel)[keyof typeof VisibilityLevel];
+
+/**
+ * 可见性配置项
+ * 位图布局（每项2位，从低位到高位）：
+ * - voteCounts: 位 0-1（实时票数）
+ * - voteDetails: 位 2-3（投票详情/谁投了什么）
+ * - voterList: 位 4-5（选民列表）
+ * - progress: 位 6-7（投票进度）
+ * - result: 位 8-9（最终结果）
+ */
+export interface VisibilityConfig {
+  voteCounts: VisibilityLevel;   // 实时票数
+  voteDetails: VisibilityLevel;  // 投票详情
+  voterList: VisibilityLevel;    // 选民列表
+  progress: VisibilityLevel;     // 投票进度
+  result: VisibilityLevel;       // 最终结果
+}
+
+/**
+ * 将可见性配置编码为位图（uint16）
+ */
+export function encodeVisibilityBitmap(config: VisibilityConfig): number {
+  return (
+    (config.voteCounts & 0x3) |
+    ((config.voteDetails & 0x3) << 2) |
+    ((config.voterList & 0x3) << 4) |
+    ((config.progress & 0x3) << 6) |
+    ((config.result & 0x3) << 8)
+  );
+}
+
+/**
+ * 从位图解码可见性配置
+ */
+export function decodeVisibilityBitmap(bitmap: number): VisibilityConfig {
+  return {
+    voteCounts: (bitmap & 0x3) as VisibilityLevel,
+    voteDetails: ((bitmap >> 2) & 0x3) as VisibilityLevel,
+    voterList: ((bitmap >> 4) & 0x3) as VisibilityLevel,
+    progress: ((bitmap >> 6) & 0x3) as VisibilityLevel,
+    result: ((bitmap >> 8) & 0x3) as VisibilityLevel,
+  };
+}
+
+/**
+ * 默认可见性配置
+ */
+export const DEFAULT_VISIBILITY_CONFIG: VisibilityConfig = {
+  voteCounts: VisibilityLevel.CreatorOnly,
+  voteDetails: VisibilityLevel.CreatorOnly,
+  voterList: VisibilityLevel.CreatorOnly,
+  progress: VisibilityLevel.CreatorOnly,
+  result: VisibilityLevel.Public,
+};
+
+/**
+ * 检查用户对某项的可见性权限
+ */
+export function checkVisibility(
+  level: VisibilityLevel,
+  isCreator: boolean,
+  isParticipant: boolean
+): boolean {
+  switch (level) {
+    case VisibilityLevel.Hidden:
+      return false;
+    case VisibilityLevel.CreatorOnly:
+      return isCreator;
+    case VisibilityLevel.ParticipantsOnly:
+      return isCreator || isParticipant;
+    case VisibilityLevel.Public:
+      return true;
+    default:
+      return false;
+  }
+}
 
 /**
  * 合约地址配置

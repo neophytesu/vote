@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { BrowserProvider, Contract } from "ethers";
 import {
   VotingFactoryABI,
+  RegistrationCenterABI,
   VotingState,
   VotingRule,
   PrivacyLevel,
@@ -31,6 +32,7 @@ export interface VotingDetails {
   resultRevealed: boolean;
   createdAt: number;
   autoAdvance: boolean;  // 是否自动推进状态
+  visibilityBitmap: number;  // 可见性配置位图
 }
 
 /**
@@ -48,6 +50,9 @@ export interface CreateVotingParams {
   votingEnd: number;
   quorum: number;
   autoAdvance: boolean;  // 是否自动推进状态
+  visibilityBitmap: number;  // 可见性配置位图
+  enableWhitelist: boolean;  // 是否启用白名单
+  whitelist: string[];  // 白名单地址列表
 }
 
 /**
@@ -140,6 +145,7 @@ export function useVotingFactory(chainId: number | null) {
       resultRevealed: boolean;
       createdAt: bigint;
       autoAdvance: boolean;
+      visibilityBitmap: bigint | number;
     };
 
     return {
@@ -162,6 +168,7 @@ export function useVotingFactory(chainId: number | null) {
       resultRevealed: d.resultRevealed,
       createdAt: Number(d.createdAt),
       autoAdvance: d.autoAdvance,
+      visibilityBitmap: Number(d.visibilityBitmap),
     };
   };
 
@@ -191,6 +198,9 @@ export function useVotingFactory(chainId: number | null) {
           votingEnd: params.votingEnd,
           quorum: params.quorum,
           autoAdvance: params.autoAdvance,
+          visibilityBitmap: params.visibilityBitmap,
+          enableWhitelist: params.enableWhitelist,
+          whitelist: params.whitelist,
         });
         
         console.log("useVotingFactory: 交易已发送, hash:", tx.hash);
@@ -573,6 +583,91 @@ export function useVotingFactory(chainId: number | null) {
     [getReadOnlyContract]
   );
 
+  /**
+   * 获取已注册选民列表（用于计算未投票的人）
+   */
+  const getRegisteredVoters = useCallback(
+    async (votingId: number): Promise<string[]> => {
+      if (!window.ethereum || !chainId) return [];
+      const addresses = getContractAddresses(chainId);
+      if (
+        !addresses.registrationCenter ||
+        addresses.registrationCenter === "0x0000000000000000000000000000000000000000"
+      ) {
+        return [];
+      }
+      try {
+        const provider = new BrowserProvider(window.ethereum);
+        const contract = new Contract(
+          addresses.registrationCenter,
+          RegistrationCenterABI,
+          provider
+        );
+        const list = await contract.getRegisteredVoters(votingId);
+        return Array.isArray(list) ? list.map((a: string) => String(a)) : [];
+      } catch (err) {
+        console.error("获取注册选民列表失败:", err);
+        return [];
+      }
+    },
+    [chainId]
+  );
+
+  /**
+   * 获取投票记录（谁投了什么）
+   */
+  const getVoteRecords = useCallback(
+    async (
+      votingId: number
+    ): Promise<{
+      voters: string[];
+      optionIndexes: number[];
+      timestamps: number[];
+    } | null> => {
+      try {
+        const contract = await getReadOnlyContract();
+        const [voters, optionIndexes, timestamps] =
+          await contract.getVoteRecords(votingId);
+        return {
+          voters: voters as string[],
+          optionIndexes: optionIndexes.map((i: bigint) => Number(i)),
+          timestamps: timestamps.map((t: bigint) => Number(t)),
+        };
+      } catch {
+        return null;
+      }
+    },
+    [getReadOnlyContract]
+  );
+
+  /**
+   * 获取特定选民的投票选择
+   */
+  const getVoterChoice = useCallback(
+    async (
+      votingId: number,
+      voter: string
+    ): Promise<{
+      optionIndex: number;
+      timestamp: number;
+      voted: boolean;
+    } | null> => {
+      try {
+        const contract = await getReadOnlyContract();
+        const [optionIndex, timestamp, voted] =
+          await contract.getVoterChoice(votingId, voter);
+        return {
+          optionIndex: Number(optionIndex),
+          timestamp: Number(timestamp),
+          voted,
+        };
+      } catch {
+        return null;
+      }
+    },
+    [getReadOnlyContract]
+  );
+
   // 清除错误
   const clearError = useCallback(() => {
     setState((prev) => ({ ...prev, error: null }));
@@ -595,6 +690,9 @@ export function useVotingFactory(chainId: number | null) {
     getMyParticipatedVotings,
     getUserVotingStatus,
     getVotingResult,
+    getVoteRecords,
+    getRegisteredVoters,
+    getVoterChoice,
     clearError,
   };
 }

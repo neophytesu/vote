@@ -188,5 +188,60 @@ contract VotingCenter is IVotingTypes {
     function getVoteRecordCount(uint256 proposalId) external view returns (uint256) {
         return voteRecords[proposalId].length;
     }
+
+    /**
+     * @notice 获取所有投票记录（用于审计和展示）
+     * @param proposalId 提案ID
+     * @return voters 投票者地址数组
+     * @return optionIndexes 选项索引数组
+     * @return timestamps 时间戳数组
+     */
+    function getVoteRecords(uint256 proposalId) external view returns (
+        address[] memory voters,
+        uint256[] memory optionIndexes,
+        uint256[] memory timestamps
+    ) {
+        Vote[] storage records = voteRecords[proposalId];
+        uint256 len = records.length;
+        
+        voters = new address[](len);
+        optionIndexes = new uint256[](len);
+        timestamps = new uint256[](len);
+        
+        for (uint256 i = 0; i < len; i++) {
+            voters[i] = records[i].voter;
+            optionIndexes[i] = records[i].optionIndex;
+            timestamps[i] = records[i].timestamp;
+        }
+        
+        return (voters, optionIndexes, timestamps);
+    }
+
+    /**
+     * @notice 获取特定选民的投票记录
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return optionIndex 投票选项（如果未投票返回 type(uint256).max）
+     * @return timestamp 投票时间
+     * @return voted 是否已投票
+     */
+    function getVoterChoice(uint256 proposalId, address voter) external view returns (
+        uint256 optionIndex,
+        uint256 timestamp,
+        bool voted
+    ) {
+        if (!hasVoted[proposalId][voter]) {
+            return (type(uint256).max, 0, false);
+        }
+        
+        Vote[] storage records = voteRecords[proposalId];
+        for (uint256 i = 0; i < records.length; i++) {
+            if (records[i].voter == voter) {
+                return (records[i].optionIndex, records[i].timestamp, true);
+            }
+        }
+        
+        return (type(uint256).max, 0, false);
+    }
 }
 
