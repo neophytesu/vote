@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-03T12:57:47.356Z
+ * 最后更新: 2026-02-06T20:52:18.412Z
  */
 
 export const VotingCoreABI = [
@@ -36,6 +36,8 @@ export const RegistrationCenterABI = [
   "function isRegistered(uint256 proposalId, address voter) view returns (bool)",
   "function voterCount(uint256 proposalId) view returns (uint256)",
   "function getRegisteredVoters(uint256 proposalId) view returns (address[])",
+  "function getVoterWeight(uint256 proposalId, address voter) view returns (uint256)",
+  "function getVoterGroupIndex(uint256 proposalId, address voter) view returns (uint256)",
 ] as const;
 
 export const VotingCenterABI = [
@@ -95,9 +97,10 @@ export const VotingFactoryABI = [
   "event ResultRevealed(uint256 indexed votingId, uint256 winningOption)",
   
   // 写入函数
-  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist) params) returns (uint256)",
+  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
+  "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
   "function startTallying(uint256 votingId)",
@@ -105,16 +108,16 @@ export const VotingFactoryABI = [
   
   // 查询函数
   "function votingCount() view returns (uint256)",
-  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap))",
+  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights))",
   "function getAllVotingIds() view returns (uint256[])",
-  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap)[])",
+  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights)[])",
   "function getVotingsByCreator(address creator) view returns (uint256[])",
   "function getVotingsByVoter(address voter) view returns (uint256[])",
   "function getVotingOptions(uint256 votingId) view returns (string[])",
   "function getVotingResult(uint256 votingId) view returns (uint256[] voteCounts, uint256 winningOption, uint256 totalVotes)",
   "function getUserVotingStatus(uint256 votingId, address user) view returns (bool registered, bool voted)",
   "function getVotingState(uint256 votingId) view returns (uint8)",
-  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap)[])",
+  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights)[])",
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
   "function getVoteRecords(uint256 votingId) view returns (address[] voters, uint256[] optionIndexes, uint256[] timestamps)",
@@ -157,10 +160,6 @@ export type PrivacyLevel = (typeof PrivacyLevel)[keyof typeof PrivacyLevel];
 
 /**
  * 可见性级别
- * 0 = 不公开（隐藏）
- * 1 = 仅创建者
- * 2 = 仅参与者（已注册的选民）
- * 3 = 所有人（公开）
  */
 export const VisibilityLevel = {
   Hidden: 0,
@@ -170,26 +169,14 @@ export const VisibilityLevel = {
 } as const;
 export type VisibilityLevel = (typeof VisibilityLevel)[keyof typeof VisibilityLevel];
 
-/**
- * 可见性配置项
- * 位图布局（每项2位，从低位到高位）：
- * - voteCounts: 位 0-1（实时票数）
- * - voteDetails: 位 2-3（投票详情/谁投了什么）
- * - voterList: 位 4-5（选民列表）
- * - progress: 位 6-7（投票进度）
- * - result: 位 8-9（最终结果）
- */
 export interface VisibilityConfig {
-  voteCounts: VisibilityLevel;   // 实时票数
-  voteDetails: VisibilityLevel;  // 投票详情
-  voterList: VisibilityLevel;    // 选民列表
-  progress: VisibilityLevel;     // 投票进度
-  result: VisibilityLevel;       // 最终结果
+  voteCounts: VisibilityLevel;
+  voteDetails: VisibilityLevel;
+  voterList: VisibilityLevel;
+  progress: VisibilityLevel;
+  result: VisibilityLevel;
 }
 
-/**
- * 将可见性配置编码为位图（uint16）
- */
 export function encodeVisibilityBitmap(config: VisibilityConfig): number {
   return (
     (config.voteCounts & 0x3) |
@@ -200,9 +187,6 @@ export function encodeVisibilityBitmap(config: VisibilityConfig): number {
   );
 }
 
-/**
- * 从位图解码可见性配置
- */
 export function decodeVisibilityBitmap(bitmap: number): VisibilityConfig {
   return {
     voteCounts: (bitmap & 0x3) as VisibilityLevel,
@@ -213,9 +197,6 @@ export function decodeVisibilityBitmap(bitmap: number): VisibilityConfig {
   };
 }
 
-/**
- * 默认可见性配置
- */
 export const DEFAULT_VISIBILITY_CONFIG: VisibilityConfig = {
   voteCounts: VisibilityLevel.CreatorOnly,
   voteDetails: VisibilityLevel.CreatorOnly,
@@ -224,9 +205,6 @@ export const DEFAULT_VISIBILITY_CONFIG: VisibilityConfig = {
   result: VisibilityLevel.Public,
 };
 
-/**
- * 检查用户对某项的可见性权限
- */
 export function checkVisibility(
   level: VisibilityLevel,
   isCreator: boolean,
@@ -261,11 +239,11 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingFactory: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
-    registrationCenter: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
-    votingCenter: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
-    revealCenter: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
-    statisticsCenter: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    votingFactory: "0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f",
+    registrationCenter: "0x7bc06c482DEAd17c0e297aFbC32f6e63d3846650",
+    votingCenter: "0xcbEAF3BDe82155F56486Fb5a1072cb8baAf547cc",
+    revealCenter: "0xc351628EB244ec633d5f21fBD6621e1a683B1181",
+    statisticsCenter: "0xFD471836031dc5108809D173A067e8486B9047A3",
   },
 } as const;
 

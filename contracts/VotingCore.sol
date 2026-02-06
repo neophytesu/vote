@@ -212,8 +212,8 @@ contract VotingCore is IVotingTypes {
             "Not a registered voter"
         );
 
-        // 调用计票中心
-        bool success = votingCenter.castVote(proposalId, msg.sender, optionIndex);
+        // 调用计票中心（VotingCore 使用默认权重1）
+        bool success = votingCenter.castVote(proposalId, msg.sender, optionIndex, 1);
         require(success, "Vote failed");
 
         proposal.totalVotes++;

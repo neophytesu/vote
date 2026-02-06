@@ -30,6 +30,12 @@ contract RegistrationCenter is IVotingTypes {
     /// @notice 提案ID => 选民数量
     mapping(uint256 => uint256) public voterCount;
 
+    /// @notice 提案ID => 选民地址 => 投票权重（0 表示未设置，默认为1）
+    mapping(uint256 => mapping(address => uint256)) public voterWeight;
+    
+    /// @notice 提案ID => 选民地址 => 所属权重分组索引
+    mapping(uint256 => mapping(address => uint256)) public voterGroupIndex;
+
     /// @notice 主投票合约地址
     address public votingCore;
 
@@ -95,6 +101,91 @@ contract RegistrationCenter is IVotingTypes {
                 emit VoterRegistered(proposalId, voters[i], block.timestamp);
             }
         }
+    }
+
+    /**
+     * @notice 注册选民并设置投票权重（加权投票使用）
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @param weight 投票权重
+     * @param groupIndex 所属权重分组索引
+     * @return success 是否注册成功
+     */
+    function registerVoterWithWeight(
+        uint256 proposalId,
+        address voter,
+        uint256 weight,
+        uint256 groupIndex
+    ) external onlyVotingCore returns (bool success) {
+        require(!isRegistered[proposalId][voter], "Already registered");
+        require(voter != address(0), "Invalid voter address");
+        require(weight > 0, "Weight must be > 0");
+
+        // 注册选民
+        isRegistered[proposalId][voter] = true;
+        registeredVoters[proposalId].push(voter);
+        voterCount[proposalId]++;
+        
+        // 设置权重和分组
+        voterWeight[proposalId][voter] = weight;
+        voterGroupIndex[proposalId][voter] = groupIndex;
+
+        emit VoterRegistered(proposalId, voter, block.timestamp);
+        
+        return true;
+    }
+
+    /**
+     * @notice 批量注册选民并设置权重（用于加权投票 + 白名单场景）
+     * @param proposalId 提案ID
+     * @param voters 选民地址列表
+     * @param weights 每个选民的权重
+     * @param groupIndexes 每个选民的分组索引
+     */
+    function batchRegisterVotersWithWeight(
+        uint256 proposalId,
+        address[] calldata voters,
+        uint256[] calldata weights,
+        uint256[] calldata groupIndexes
+    ) external onlyVotingCore {
+        require(voters.length == weights.length && voters.length == groupIndexes.length, "Array length mismatch");
+        for (uint256 i = 0; i < voters.length; i++) {
+            if (!isRegistered[proposalId][voters[i]] && voters[i] != address(0) && weights[i] > 0) {
+                isRegistered[proposalId][voters[i]] = true;
+                registeredVoters[proposalId].push(voters[i]);
+                voterCount[proposalId]++;
+                voterWeight[proposalId][voters[i]] = weights[i];
+                voterGroupIndex[proposalId][voters[i]] = groupIndexes[i];
+                emit VoterRegistered(proposalId, voters[i], block.timestamp);
+            }
+        }
+    }
+
+    /**
+     * @notice 获取选民的投票权重
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return 投票权重（未设置返回1，作为默认权重）
+     */
+    function getVoterWeight(
+        uint256 proposalId,
+        address voter
+    ) external view returns (uint256) {
+        uint256 w = voterWeight[proposalId][voter];
+        return w > 0 ? w : 1; // 默认权重为1（兼容简单多数）
+    }
+
+    /**
+     * @notice 获取选民的权重分组索引
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return 分组索引
+     */
+    function getVoterGroupIndex(
+        uint256 proposalId,
+        address voter
+    ) external view returns (uint256) {
+        return voterGroupIndex[proposalId][voter];
     }
 
     /**

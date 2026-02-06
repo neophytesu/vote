@@ -52,6 +52,8 @@ contract VotingFactory is IVotingTypes {
         uint256 createdAt;
         bool autoAdvance;  // 是否自动推进状态
         uint16 visibilityBitmap;  // 可见性配置位图 (每项2位: 0=隐藏,1=创建者,2=参与者,3=公开)
+        string[] weightGroupNames;    // 加权投票：权重分组名称
+        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
     }
 
     /// @notice 投票详情结构（包含聚合数据）
@@ -76,6 +78,8 @@ contract VotingFactory is IVotingTypes {
         uint256 createdAt;
         bool autoAdvance;  // 是否自动推进状态
         uint16 visibilityBitmap;  // 可见性配置位图
+        string[] weightGroupNames;    // 加权投票：权重分组名称
+        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
     }
 
     /// @notice 创建投票参数结构
@@ -94,6 +98,9 @@ contract VotingFactory is IVotingTypes {
         uint16 visibilityBitmap;  // 可见性配置位图
         bool enableWhitelist;  // 是否启用白名单
         address[] whitelist;   // 白名单地址列表（预注册，可直接投票）
+        uint256[] whitelistGroupIndexes; // 白名单地址对应的权重分组索引（加权+白名单时使用）
+        string[] weightGroupNames;    // 加权投票：权重分组名称
+        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
     }
 
     // ==================== 模块化中心合约 ====================
@@ -272,6 +279,17 @@ contract VotingFactory is IVotingTypes {
         voting.autoAdvance = params.autoAdvance;
         voting.visibilityBitmap = params.visibilityBitmap;
 
+        // 加权投票：存储权重分组
+        if (params.votingRule == VotingRule.Weighted) {
+            require(params.weightGroupNames.length > 0, "Weighted voting requires weight groups");
+            require(params.weightGroupNames.length == params.weightGroupWeights.length, "Weight groups mismatch");
+            for (uint256 i = 0; i < params.weightGroupNames.length; i++) {
+                require(params.weightGroupWeights[i] > 0, "Weight must be > 0");
+                voting.weightGroupNames.push(params.weightGroupNames[i]);
+                voting.weightGroupWeights.push(params.weightGroupWeights[i]);
+            }
+        }
+
         // 存储选项
         for (uint256 i = 0; i < params.options.length; i++) {
             voting.options.push(params.options[i]);
@@ -283,7 +301,19 @@ contract VotingFactory is IVotingTypes {
         // 如果启用白名单，批量预注册白名单地址
         if (params.enableWhitelist && params.whitelist.length > 0) {
             require(params.whitelist.length <= 200, "Whitelist too large (max 200)");
-            registrationCenter.batchRegisterVoters(votingId, params.whitelist);
+            // 加权投票 + 白名单：按分组注册并设置权重
+            if (params.votingRule == VotingRule.Weighted && params.whitelistGroupIndexes.length > 0) {
+                require(params.whitelistGroupIndexes.length == params.whitelist.length, "Whitelist group indexes length mismatch");
+                // 构建每个地址的权重数组
+                uint256[] memory weights = new uint256[](params.whitelist.length);
+                for (uint256 i = 0; i < params.whitelist.length; i++) {
+                    require(params.whitelistGroupIndexes[i] < params.weightGroupNames.length, "Invalid group index in whitelist");
+                    weights[i] = params.weightGroupWeights[params.whitelistGroupIndexes[i]];
+                }
+                registrationCenter.batchRegisterVotersWithWeight(votingId, params.whitelist, weights, params.whitelistGroupIndexes);
+            } else {
+                registrationCenter.batchRegisterVoters(votingId, params.whitelist);
+            }
         }
 
         // 记录创建者的投票
@@ -367,6 +397,48 @@ contract VotingFactory is IVotingTypes {
     }
 
     /**
+     * @notice 注册为选民（加权投票 - 选择权重分组）
+     * @param votingId 投票ID
+     * @param groupIndex 权重分组索引
+     * @dev 仅在投票规则为 Weighted 时使用
+     */
+    function registerVoterWeighted(uint256 votingId, uint256 groupIndex)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        
+        // 必须是加权投票
+        require(voting.votingRule == VotingRule.Weighted, "Not weighted voting");
+        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+        
+        // 自动推进模式：使用有效状态检查（包含时间限制）
+        if (voting.autoAdvance) {
+            require(canRegister(votingId), "Registration not open");
+        } else {
+            // 手动模式：只检查状态，无时间限制
+            require(voting.state == VotingState.Registration, "Invalid state");
+        }
+
+        // 获取分组权重
+        uint256 weight = voting.weightGroupWeights[groupIndex];
+
+        // 调用注册中心进行带权重注册
+        bool success = registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex);
+        require(success, "Registration failed");
+
+        // 记录用户参与的投票
+        voterParticipations[msg.sender].push(votingId);
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoterRegistered(votingId, msg.sender);
+        }
+
+        emit VoterRegistered(votingId, msg.sender);
+    }
+
+    /**
      * @notice 开始投票阶段
      * @param votingId 投票ID
      * @dev 手动模式：创建者随时可推进，无时间限制；自动模式：需要满足时间条件
@@ -419,8 +491,11 @@ contract VotingFactory is IVotingTypes {
             "Not registered"
         );
 
-        // 调用计票中心进行投票
-        bool success = votingCenter.castVote(votingId, msg.sender, optionIndex);
+        // 获取选民权重（简单多数默认为1，加权投票为分组权重）
+        uint256 weight = registrationCenter.getVoterWeight(votingId, msg.sender);
+
+        // 调用计票中心进行投票（传递权重）
+        bool success = votingCenter.castVote(votingId, msg.sender, optionIndex, weight);
         require(success, "Vote failed");
 
         // 更新统计中心
@@ -549,7 +624,9 @@ contract VotingFactory is IVotingTypes {
             resultRevealed: resultRevealed,
             createdAt: info.createdAt,
             autoAdvance: info.autoAdvance,
-            visibilityBitmap: info.visibilityBitmap
+            visibilityBitmap: info.visibilityBitmap,
+            weightGroupNames: info.weightGroupNames,
+            weightGroupWeights: info.weightGroupWeights
         });
     }
 

@@ -32,6 +32,7 @@ contract VotingCenter is IVotingTypes {
         uint256 optionIndex;
         uint256 timestamp;
         bool isValid;
+        uint256 weight;  // 投票权重（简单多数为1，加权投票为分组权重）
     }
 
     /// @notice 主投票合约地址
@@ -89,39 +90,43 @@ contract VotingCenter is IVotingTypes {
     }
 
     /**
-     * @notice 提交投票
+     * @notice 提交投票（支持加权）
      * @param proposalId 提案ID
      * @param voter 投票者地址
      * @param optionIndex 选项索引 (0-based)
+     * @param weight 投票权重（简单多数传1，加权投票传分组权重）
      * @return success 是否投票成功
      * 
      * 对应文档流程:
      * 1. 构造投票内容 vote ∈ {0,1,...,n}
      * 2. 验证选民资格 (通过注册中心)
      * 3. 防止双重投票 (检查nullifierHash)
-     * 4. 聚合票数 (简化版直接计数)
+     * 4. 聚合票数 (按权重累加)
      */
     function castVote(
         uint256 proposalId,
         address voter,
-        uint256 optionIndex
+        uint256 optionIndex,
+        uint256 weight
     ) external onlyVotingCore returns (bool success) {
         require(!hasVoted[proposalId][voter], "Already voted");
         require(optionIndex < optionCounts[proposalId], "Invalid option index");
+        require(weight > 0, "Weight must be > 0");
 
         // 标记已投票（防止双重投票）
         hasVoted[proposalId][voter] = true;
         
-        // 记录投票
-        voteCounts[proposalId][optionIndex]++;
-        totalVotes[proposalId]++;
+        // 按权重记录投票
+        voteCounts[proposalId][optionIndex] += weight;
+        totalVotes[proposalId] += weight;
 
         // 存储投票记录（用于审计）
         voteRecords[proposalId].push(Vote({
             voter: voter,
             optionIndex: optionIndex,
             timestamp: block.timestamp,
-            isValid: true
+            isValid: true,
+            weight: weight
         }));
 
         emit VoteCast(proposalId, voter, optionIndex, block.timestamp);

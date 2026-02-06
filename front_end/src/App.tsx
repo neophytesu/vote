@@ -51,6 +51,7 @@ import {
   UserCheck,
   Upload,
   X,
+  RotateCcw,
 } from "lucide-react";
 
 // 本地提案接口（扩展合约数据，添加用户状态）
@@ -74,6 +75,8 @@ interface LocalProposal {
   votingStart: number;       // 投票开始时间
   votingEnd: number;         // 投票结束时间
   visibilityBitmap: number;  // 可见性配置位图
+  weightGroupNames: string[];    // 加权投票：权重分组名称
+  weightGroupWeights: number[];  // 加权投票：权重分组权重值
 }
 
 // 将合约数据转换为本地提案格式
@@ -98,6 +101,8 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     votingStart: voting.votingStart,
     votingEnd: voting.votingEnd,
     visibilityBitmap: voting.visibilityBitmap,
+    weightGroupNames: voting.weightGroupNames || [],
+    weightGroupWeights: voting.weightGroupWeights || [],
   };
 }
 
@@ -625,6 +630,7 @@ interface ProposalCardProps {
   proposal: LocalProposal;
   wallet: WalletState;
   onRegister: (proposalId: number) => void;
+  onRegisterWeighted: (proposalId: number, groupIndex: number) => void;
   onVote: (proposalId: number, optionIndex: number) => void;
   onStartRegistration: (proposalId: number) => void;
   onStartVoting: (proposalId: number) => void;
@@ -644,8 +650,14 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
+  const [showResultDialog, setShowResultDialog] = useState(false);
+  const [showVoterListDialog, setShowVoterListDialog] = useState(false);
+  const [showWeightGroupDialog, setShowWeightGroupDialog] = useState(false);
+  const [selectedGroupIndex, setSelectedGroupIndex] = useState<number | null>(null);
+  const [voterListAddresses, setVoterListAddresses] = useState<string[]>([]);
+  const [loadingVoterList, setLoadingVoterList] = useState(false);
   const [voteRecords, setVoteRecords] = useState<VoteRecord[]>([]);
   const [notVotedAddresses, setNotVotedAddresses] = useState<string[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
@@ -808,9 +820,65 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
           <div className="py-2">
             {/* 选民数量 - 根据选民列表可见性控制 */}
             {canViewVoterList ? (
-              <p className="text-sm text-zinc-500 text-center">
-                已注册选民: {proposal.totalVoters.toLocaleString()}
-              </p>
+              <div className="flex flex-col items-center gap-1">
+                <p className="text-sm text-zinc-500">
+                  已注册选民: {proposal.totalVoters.toLocaleString()}
+                </p>
+                {proposal.totalVoters > 0 && (
+                  <button
+                    onClick={async () => {
+                      setShowVoterListDialog(true);
+                      if (voterListAddresses.length === 0 && !loadingVoterList) {
+                        setLoadingVoterList(true);
+                        const list = onLoadRegisteredVoters ? await onLoadRegisteredVoters(proposal.id) : null;
+                        if (list) setVoterListAddresses(list);
+                        setLoadingVoterList(false);
+                      }
+                    }}
+                    className="text-xs text-violet-400 hover:text-violet-300 flex items-center gap-1 transition-colors"
+                  >
+                    <Users className="w-3 h-3" />
+                    查看选民列表
+                    {loadingVoterList && <span className="ml-1 animate-spin">⏳</span>}
+                  </button>
+                )}
+                <Dialog open={showVoterListDialog} onOpenChange={setShowVoterListDialog}>
+                  <DialogContent className="bg-zinc-900 border-zinc-800 max-w-md">
+                    <DialogHeader>
+                      <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                        <Users className="w-5 h-5 text-violet-400" />
+                        选民列表
+                      </DialogTitle>
+                      <DialogDescription className="text-zinc-400">
+                        共 {voterListAddresses.length} 位已注册选民
+                      </DialogDescription>
+                    </DialogHeader>
+                    {loadingVoterList ? (
+                      <div className="flex justify-center py-6">
+                        <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-violet-500" />
+                      </div>
+                    ) : voterListAddresses.length > 0 ? (
+                      <div className="max-h-64 overflow-y-auto space-y-1 py-2">
+                        {voterListAddresses.map((addr, i) => (
+                          <div
+                            key={i}
+                            className="flex items-center gap-2 px-3 py-2 rounded-lg bg-zinc-800/50 text-sm"
+                          >
+                            <span className="text-zinc-500 w-6 text-right">{i + 1}.</span>
+                            <span className="text-zinc-300 font-mono text-xs truncate">
+                              {addr}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center py-6 text-zinc-500">
+                        <p className="text-sm">暂无选民数据</p>
+                      </div>
+                    )}
+                  </DialogContent>
+                </Dialog>
+              </div>
             ) : (
               <p className="text-sm text-zinc-600 text-center flex items-center justify-center gap-2">
                 <EyeOff className="w-4 h-4" /> 选民信息未公开
@@ -975,13 +1043,78 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
           {/* 注册阶段按钮 */}
           {proposal.status === VotingState.Registration && (
             <>
-              <Button 
-                onClick={() => onRegister(proposal.id)}
-                disabled={!wallet.isConnected || proposal.isRegistered}
-                className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
-              >
-                {proposal.isRegistered ? "已注册" : "注册投票"}
-              </Button>
+              {proposal.rule === VotingRule.Weighted && proposal.weightGroupNames.length > 0 ? (
+                <>
+                  <Button
+                    onClick={() => {
+                      setSelectedGroupIndex(null);
+                      setShowWeightGroupDialog(true);
+                    }}
+                    disabled={!wallet.isConnected || proposal.isRegistered}
+                    className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                  >
+                    {proposal.isRegistered ? "已注册" : "选择分组注册"}
+                  </Button>
+                  <Dialog open={showWeightGroupDialog} onOpenChange={setShowWeightGroupDialog}>
+                    <DialogContent className="bg-zinc-900 border-zinc-800 max-w-sm">
+                      <DialogHeader>
+                        <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                          <Crown className="w-5 h-5 text-amber-400" />
+                          选择权重分组
+                        </DialogTitle>
+                        <DialogDescription className="text-zinc-400">
+                          不同分组的投票权重不同，请选择您所属的分组
+                        </DialogDescription>
+                      </DialogHeader>
+                      <div className="space-y-2 py-2">
+                        {proposal.weightGroupNames.map((name, idx) => (
+                          <button
+                            key={idx}
+                            onClick={() => setSelectedGroupIndex(idx)}
+                            className={`w-full p-3 rounded-lg border-2 text-left transition-all flex items-center justify-between ${
+                              selectedGroupIndex === idx
+                                ? "border-amber-500 bg-amber-500/10"
+                                : "border-zinc-800 hover:border-zinc-700"
+                            }`}
+                          >
+                            <div>
+                              <p className="font-medium text-sm text-zinc-100">{name}</p>
+                              <p className="text-xs text-zinc-500">权重: {proposal.weightGroupWeights[idx]}x</p>
+                            </div>
+                            {selectedGroupIndex === idx && (
+                              <div className="w-5 h-5 rounded-full bg-amber-500 flex items-center justify-center">
+                                <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
+                                </svg>
+                              </div>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                      <Button
+                        onClick={() => {
+                          if (selectedGroupIndex !== null) {
+                            onRegisterWeighted(proposal.id, selectedGroupIndex);
+                            setShowWeightGroupDialog(false);
+                          }
+                        }}
+                        disabled={selectedGroupIndex === null}
+                        className="w-full bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                      >
+                        确认注册
+                      </Button>
+                    </DialogContent>
+                  </Dialog>
+                </>
+              ) : (
+                <Button 
+                  onClick={() => onRegister(proposal.id)}
+                  disabled={!wallet.isConnected || proposal.isRegistered}
+                  className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                >
+                  {proposal.isRegistered ? "已注册" : "注册投票"}
+                </Button>
+              )}
               {canAdvanceState && (
                 <Button 
                   onClick={() => onStartVoting(proposal.id)}
@@ -1044,14 +1177,52 @@ function ProposalCard({ proposal, wallet, onRegister, onVote, onStartRegistratio
             </Button>
           )}
 
-          {/* 已完成 */}
+          {/* 已完成 - 点击弹出仅展示结果的弹窗 */}
           {proposal.status === VotingState.Finalized && (
-            <Button
-              variant="outline"
-              className="flex-1 border-zinc-700 hover:border-violet-500 text-zinc-100"
-            >
-              查看结果
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                className="flex-1 border-zinc-700 hover:border-violet-500 text-zinc-100"
+                onClick={() => setShowResultDialog(true)}
+              >
+                查看结果
+              </Button>
+              <Dialog open={showResultDialog} onOpenChange={setShowResultDialog}>
+                <DialogContent className="bg-zinc-900 border-zinc-800 max-w-sm">
+                  <DialogHeader>
+                    <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                      <BarChart3 className="w-5 h-5 text-violet-400" />
+                      投票结果 - {proposal.title}
+                    </DialogTitle>
+                    <DialogDescription className="text-zinc-400">
+                      {canViewResult ? "投票已结束，以下为胜出选项" : ""}
+                    </DialogDescription>
+                  </DialogHeader>
+                  {canViewResult ? (
+                    totalVotes > 0 ? (
+                      <div className="flex flex-col items-center py-6 space-y-3">
+                        <Crown className="w-10 h-10 text-yellow-400" />
+                        <span className={`text-2xl font-bold ${optionColorConfig[leadingIndex % optionColorConfig.length].text}`}>
+                          {proposal.options[leadingIndex]}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex flex-col items-center py-6 space-y-2 text-zinc-500">
+                        <p className="text-sm">暂无投票数据</p>
+                      </div>
+                    )
+                  ) : (
+                    <div className="flex flex-col items-center py-8 space-y-3 text-zinc-500">
+                      <EyeOff className="w-10 h-10 text-zinc-600" />
+                      <p className="text-sm font-medium">结果未公开</p>
+                      <p className="text-xs text-zinc-600">
+                        {isCreator ? "您已设置结果不公开" : isParticipant ? "仅创建者可查看结果" : "您无权查看此投票结果"}
+                      </p>
+                    </div>
+                  )}
+                </DialogContent>
+              </Dialog>
+            </>
           )}
         </div>
       </CardContent>
@@ -1258,6 +1429,9 @@ interface CreateProposalData {
   visibilityBitmap: number;  // 可见性配置位图
   enableWhitelist: boolean;  // 是否启用白名单
   whitelist: string[];  // 白名单地址列表
+  whitelistGroupIndexes: number[];  // 白名单地址对应的权重分组索引
+  weightGroupNames: string[];    // 加权投票：权重分组名称
+  weightGroupWeights: number[];  // 加权投票：权重分组权重值
 }
 
 interface CreateProposalCardProps {
@@ -1281,6 +1455,13 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
   const [enableWhitelist, setEnableWhitelist] = useState(false); // 是否启用白名单
   const [whitelist, setWhitelist] = useState<string[]>([]); // 白名单地址列表
   const [whitelistInput, setWhitelistInput] = useState(""); // 白名单输入框
+  const [whitelistGroupMap, setWhitelistGroupMap] = useState<Record<string, number>>({}); // 地址 -> 分组索引
+  const [whitelistActiveGroup, setWhitelistActiveGroup] = useState(0); // 当前选中的分组 tab
+  // 加权投票：权重分组
+  const [weightGroups, setWeightGroups] = useState<{ name: string; weight: number }[]>([
+    { name: "普通组", weight: 1 },
+    { name: "高权重组", weight: 3 },
+  ]);
   // 信息公开对象：0=不公开, 1=仅创建者, 2=仅参与者, 3=所有人
   const [voteCountsVisibility, setVoteCountsVisibility] = useState<number>(1);
   const [voteDetailsVisibility, setVoteDetailsVisibility] = useState<number>(1);
@@ -1320,6 +1501,9 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     setEnableWhitelist(false);
     setWhitelist([]);
     setWhitelistInput("");
+    setWhitelistGroupMap({});
+    setWhitelistActiveGroup(0);
+    setWeightGroups([{ name: "普通组", weight: 1 }, { name: "高权重组", weight: 3 }]);
     setVoteCountsVisibility(1);
     setVoteDetailsVisibility(1);
     setVoterListVisibility(1);
@@ -1410,6 +1594,11 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       visibilityBitmap,
       enableWhitelist,
       whitelist,
+      whitelistGroupIndexes: (rule === VotingRule.Weighted && enableWhitelist)
+        ? whitelist.map(addr => whitelistGroupMap[addr] ?? 0)
+        : [],
+      weightGroupNames: rule === VotingRule.Weighted ? weightGroups.map(g => g.name) : [],
+      weightGroupWeights: rule === VotingRule.Weighted ? weightGroups.map(g => g.weight) : [],
     };
 
     console.log("开始创建投票，参数:", newProposal);
@@ -1462,12 +1651,24 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       <Dialog open={isOpen} onOpenChange={setIsOpen}>
         <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-3xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="text-zinc-100 flex items-center gap-2">
-              <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-sm">
-                {step}
-              </span>
-              {step === 1 ? "基本信息" : step === 2 ? "投票选项" : "规则配置"}
-            </DialogTitle>
+            <div className="flex items-center justify-between">
+              <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                <span className="w-8 h-8 rounded-lg bg-gradient-to-br from-violet-500 to-fuchsia-500 flex items-center justify-center text-sm">
+                  {step}
+                </span>
+                {step === 1 ? "基本信息" : step === 2 ? "投票选项" : "规则配置"}
+              </DialogTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { resetForm(); }}
+                className="text-zinc-400 hover:text-zinc-100 hover:bg-zinc-800 gap-1.5"
+                title="重置所有配置"
+              >
+                <RotateCcw className="w-4 h-4" />
+                重置配置
+              </Button>
+            </div>
             <DialogDescription className="text-zinc-400">
               {step === 1 ? "填写提案的标题和描述" : step === 2 ? "设置投票选项" : "配置投票规则和隐私设置"}
             </DialogDescription>
@@ -1655,6 +1856,64 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                       </div>
                     </div>
 
+                    {/* 加权投票：权重分组配置 */}
+                    {rule === VotingRule.Weighted && (
+                      <div className="col-span-2 space-y-2">
+                        <label className="text-sm text-zinc-300 flex items-center gap-2">
+                          <Crown className="w-4 h-4 text-amber-400" /> 权重分组
+                        </label>
+                        <p className="text-xs text-zinc-500">选民注册时选择分组，投票按分组权重计入票数</p>
+                        <div className="space-y-2">
+                          {weightGroups.map((group, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <input
+                                type="text"
+                                value={group.name}
+                                onChange={(e) => {
+                                  const newGroups = [...weightGroups];
+                                  newGroups[idx].name = e.target.value;
+                                  setWeightGroups(newGroups);
+                                }}
+                                placeholder="分组名称"
+                                className="flex-1 px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
+                              />
+                              <div className="flex items-center gap-1">
+                                <span className="text-xs text-zinc-500">权重</span>
+                                <input
+                                  type="number"
+                                  min={1}
+                                  max={100}
+                                  value={group.weight}
+                                  onChange={(e) => {
+                                    const newGroups = [...weightGroups];
+                                    newGroups[idx].weight = Math.max(1, parseInt(e.target.value) || 1);
+                                    setWeightGroups(newGroups);
+                                  }}
+                                  className="w-16 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 text-center focus:border-violet-500 focus:outline-none"
+                                />
+                              </div>
+                              {weightGroups.length > 1 && (
+                                <button
+                                  onClick={() => setWeightGroups(weightGroups.filter((_, i) => i !== idx))}
+                                  className="p-1 text-zinc-500 hover:text-red-400 transition-colors"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                        {weightGroups.length < 8 && (
+                          <button
+                            onClick={() => setWeightGroups([...weightGroups, { name: "", weight: 1 }])}
+                            className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
+                          >
+                            + 添加分组
+                          </button>
+                        )}
+                      </div>
+                    )}
+
                     {/* 隐私级别 */}
                     <div className="space-y-2">
                       <label className="text-sm text-zinc-300">隐私级别</label>
@@ -1779,14 +2038,46 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                     <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-cyan-500/30">
                       <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
                         <Upload className="w-4 h-4" /> 白名单地址导入
+                        {rule === VotingRule.Weighted && (
+                          <span className="text-xs text-cyan-400 ml-1">（按权重分组分配）</span>
+                        )}
                       </p>
+
+                      {/* 加权投票模式：分组 Tab */}
+                      {rule === VotingRule.Weighted && weightGroups.length > 0 && (
+                        <div className="flex gap-1 p-1 rounded-lg bg-zinc-900">
+                          {weightGroups.map((group, gIdx) => {
+                            const groupCount = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === gIdx).length;
+                            return (
+                              <button
+                                key={gIdx}
+                                onClick={() => setWhitelistActiveGroup(gIdx)}
+                                className={`flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                                  whitelistActiveGroup === gIdx
+                                    ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                                }`}
+                              >
+                                {group.name} (×{group.weight})
+                                {groupCount > 0 && (
+                                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/30 text-cyan-300">
+                                    {groupCount}
+                                  </span>
+                                )}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
                       
                       {/* 输入区域 */}
                       <div className="space-y-2">
                         <textarea
                           value={whitelistInput}
                           onChange={(e) => setWhitelistInput(e.target.value)}
-                          placeholder="输入钱包地址，每行一个或用逗号分隔&#10;例如：&#10;0x1234...&#10;0x5678..."
+                          placeholder={rule === VotingRule.Weighted
+                            ? `输入要加入「${weightGroups[whitelistActiveGroup]?.name || ""}」分组的地址，每行一个或用逗号分隔`
+                            : "输入钱包地址，每行一个或用逗号分隔\n例如：\n0x1234...\n0x5678..."}
                           rows={4}
                           className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none transition-colors resize-none text-sm font-mono"
                         />
@@ -1799,6 +2090,16 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                                 .filter(a => a.length > 0 && a.startsWith("0x"));
                               const uniqueAddresses = [...new Set([...whitelist, ...addresses])];
                               setWhitelist(uniqueAddresses);
+                              // 加权模式下，为新增地址设置分组
+                              if (rule === VotingRule.Weighted) {
+                                const newMap = { ...whitelistGroupMap };
+                                addresses.forEach(addr => {
+                                  if (!(addr in newMap)) {
+                                    newMap[addr] = whitelistActiveGroup;
+                                  }
+                                });
+                                setWhitelistGroupMap(newMap);
+                              }
                               setWhitelistInput("");
                             }}
                             disabled={!whitelistInput.trim()}
@@ -1807,12 +2108,26 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                             添加地址
                           </Button>
                           <Button
-                            onClick={() => setWhitelist([])}
-                            disabled={whitelist.length === 0}
+                            onClick={() => {
+                              if (rule === VotingRule.Weighted) {
+                                // 加权模式：仅清空当前分组的地址
+                                const groupAddrs = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup);
+                                const remaining = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) !== whitelistActiveGroup);
+                                const newMap = { ...whitelistGroupMap };
+                                groupAddrs.forEach(addr => delete newMap[addr]);
+                                setWhitelist(remaining);
+                                setWhitelistGroupMap(newMap);
+                              } else {
+                                setWhitelist([]);
+                              }
+                            }}
+                            disabled={rule === VotingRule.Weighted
+                              ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length === 0
+                              : whitelist.length === 0}
                             variant="outline"
                             className="border-zinc-700 text-zinc-400 hover:text-rose-400 hover:border-rose-500 disabled:opacity-50"
                           >
-                            清空
+                            {rule === VotingRule.Weighted ? "清空本组" : "清空"}
                           </Button>
                         </div>
                       </div>
@@ -1821,20 +2136,35 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                       {whitelist.length > 0 && (
                         <div className="space-y-2">
                           <p className={`text-xs ${whitelist.length > 200 ? "text-rose-400" : "text-zinc-400"}`}>
-                            已添加 {whitelist.length} 个地址
+                            {rule === VotingRule.Weighted
+                              ? `共 ${whitelist.length} 个地址（当前分组 ${whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length} 个）`
+                              : `已添加 ${whitelist.length} 个地址`}
                             {whitelist.length > 200 && " (超过 200 限制，请减少)"}
                           </p>
                           <div className="max-h-32 overflow-y-auto space-y-1 pr-1">
-                            {whitelist.map((addr, idx) => (
+                            {(rule === VotingRule.Weighted
+                              ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup)
+                              : whitelist
+                            ).map((addr) => (
                               <div
-                                key={idx}
+                                key={addr}
                                 className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 group"
                               >
                                 <span className="text-xs font-mono text-zinc-300 truncate flex-1">
                                   {addr.slice(0, 10)}...{addr.slice(-8)}
                                 </span>
+                                {rule === VotingRule.Weighted && (
+                                  <span className="text-xs text-cyan-400 mx-2">
+                                    {weightGroups[whitelistGroupMap[addr] ?? 0]?.name}
+                                  </span>
+                                )}
                                 <button
-                                  onClick={() => setWhitelist(whitelist.filter((_, i) => i !== idx))}
+                                  onClick={() => {
+                                    setWhitelist(whitelist.filter(a => a !== addr));
+                                    const newMap = { ...whitelistGroupMap };
+                                    delete newMap[addr];
+                                    setWhitelistGroupMap(newMap);
+                                  }}
                                   className="ml-2 p-1 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
                                 >
                                   <X className="w-3 h-3" />
@@ -2148,6 +2478,25 @@ function App() {
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  // 处理加权注册 - 调用真实合约
+  const handleRegisterWeighted = useCallback(async (proposalId: number, groupIndex: number) => {
+    console.log("handleRegisterWeighted: 点击加权注册, proposalId:", proposalId, "groupIndex:", groupIndex);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    
+    console.log("handleRegisterWeighted: 调用 votingFactory.registerVoterWeighted");
+    const success = await votingFactory.registerVoterWeighted(proposalId, groupIndex);
+    console.log("handleRegisterWeighted: 结果:", success, "error:", votingFactory.error);
+    if (success) {
+      addToast("success", "注册成功", "您已成功注册为加权投票人");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "注册失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
   // 处理投票 - 调用真实合约
   const handleVote = useCallback(async (proposalId: number, optionIndex: number) => {
     console.log("handleVote: 点击投票, proposalId:", proposalId, "optionIndex:", optionIndex);
@@ -2288,6 +2637,9 @@ function App() {
       visibilityBitmap: proposalData.visibilityBitmap,
       enableWhitelist: proposalData.enableWhitelist,
       whitelist: proposalData.whitelist,
+      whitelistGroupIndexes: proposalData.whitelistGroupIndexes || [],
+      weightGroupNames: proposalData.weightGroupNames || [],
+      weightGroupWeights: proposalData.weightGroupWeights || [],
     });
 
     if (votingId !== null) {
@@ -2428,6 +2780,7 @@ function App() {
                     proposal={proposal} 
                     wallet={wallet}
                     onRegister={handleRegister}
+                    onRegisterWeighted={handleRegisterWeighted}
                     onVote={handleVote}
                     onStartRegistration={handleStartRegistration}
                     onStartVoting={handleStartVoting}
@@ -2472,6 +2825,7 @@ function App() {
                         proposal={proposal} 
                         wallet={wallet}
                         onRegister={handleRegister}
+                        onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
@@ -2515,6 +2869,7 @@ function App() {
                         proposal={proposal} 
                         wallet={wallet}
                         onRegister={handleRegister}
+                        onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
@@ -2643,6 +2998,7 @@ function App() {
                             proposal={proposal} 
                             wallet={wallet}
                             onRegister={handleRegister}
+                            onRegisterWeighted={handleRegisterWeighted}
                             onVote={handleVote}
                             onStartRegistration={handleStartRegistration}
                             onStartVoting={handleStartVoting}

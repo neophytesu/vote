@@ -33,6 +33,8 @@ export interface VotingDetails {
   createdAt: number;
   autoAdvance: boolean;  // 是否自动推进状态
   visibilityBitmap: number;  // 可见性配置位图
+  weightGroupNames: string[];    // 加权投票：权重分组名称
+  weightGroupWeights: number[];  // 加权投票：权重分组权重值
 }
 
 /**
@@ -53,6 +55,9 @@ export interface CreateVotingParams {
   visibilityBitmap: number;  // 可见性配置位图
   enableWhitelist: boolean;  // 是否启用白名单
   whitelist: string[];  // 白名单地址列表
+  whitelistGroupIndexes: number[];  // 白名单地址对应的权重分组索引
+  weightGroupNames: string[];    // 加权投票：权重分组名称
+  weightGroupWeights: number[];  // 加权投票：权重分组权重值
 }
 
 /**
@@ -146,6 +151,8 @@ export function useVotingFactory(chainId: number | null) {
       createdAt: bigint;
       autoAdvance: boolean;
       visibilityBitmap: bigint | number;
+      weightGroupNames: string[];
+      weightGroupWeights: bigint[];
     };
 
     return {
@@ -169,6 +176,8 @@ export function useVotingFactory(chainId: number | null) {
       createdAt: Number(d.createdAt),
       autoAdvance: d.autoAdvance,
       visibilityBitmap: Number(d.visibilityBitmap),
+      weightGroupNames: d.weightGroupNames ? [...d.weightGroupNames] : [],
+      weightGroupWeights: d.weightGroupWeights ? d.weightGroupWeights.map((w: bigint) => Number(w)) : [],
     };
   };
 
@@ -201,6 +210,9 @@ export function useVotingFactory(chainId: number | null) {
           visibilityBitmap: params.visibilityBitmap,
           enableWhitelist: params.enableWhitelist,
           whitelist: params.whitelist,
+          whitelistGroupIndexes: params.whitelistGroupIndexes || [],
+          weightGroupNames: params.weightGroupNames || [],
+          weightGroupWeights: params.weightGroupWeights || [],
         });
         
         console.log("useVotingFactory: 交易已发送, hash:", tx.hash);
@@ -292,6 +304,37 @@ export function useVotingFactory(chainId: number | null) {
           ...prev,
           isLoading: false,
           error: error.message || "注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 注册选民（加权投票 - 选择权重分组）
+   */
+  const registerVoterWeighted = useCallback(
+    async (votingId: number, groupIndex: number): Promise<boolean> => {
+      console.log("registerVoterWeighted: 开始, votingId:", votingId, "groupIndex:", groupIndex);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        console.log("registerVoterWeighted: 获取合约成功");
+        const tx = await contract.registerVoterWeighted(votingId, groupIndex);
+        console.log("registerVoterWeighted: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("registerVoterWeighted: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("registerVoterWeighted: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "加权注册失败",
         }));
         return false;
       }
@@ -679,6 +722,7 @@ export function useVotingFactory(chainId: number | null) {
     createVoting,
     startRegistration,
     registerVoter,
+    registerVoterWeighted,
     startVoting,
     castVote,
     startTallying,
