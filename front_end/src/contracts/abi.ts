@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-10T13:55:28.046Z
+ * 最后更新: 2026-02-10T14:52:15.688Z
  */
 
 export const VotingCoreABI = [
@@ -38,6 +38,10 @@ export const RegistrationCenterABI = [
   "function getRegisteredVoters(uint256 proposalId) view returns (address[])",
   "function getVoterWeight(uint256 proposalId, address voter) view returns (uint256)",
   "function getVoterGroupIndex(uint256 proposalId, address voter) view returns (uint256)",
+  "function isPending(uint256 proposalId, address voter) view returns (bool)",
+  "function pendingCount(uint256 proposalId) view returns (uint256)",
+  "function getPendingVoters(uint256 proposalId) view returns (address[])",
+  "function isPendingVoter(uint256 proposalId, address voter) view returns (bool)",
 ] as const;
 
 export const VotingCenterABI = [
@@ -95,12 +99,18 @@ export const VotingFactoryABI = [
   "event VoteCast(uint256 indexed votingId, address indexed voter, uint256 optionIndex)",
   "event StateChanged(uint256 indexed votingId, uint8 newState)",
   "event ResultRevealed(uint256 indexed votingId, uint256 winningOption)",
+  "event RegistrationRequested(uint256 indexed votingId, address indexed voter)",
+  "event RegistrationApproved(uint256 indexed votingId, address indexed voter)",
+  "event RegistrationRejected(uint256 indexed votingId, address indexed voter)",
   
   // 写入函数
-  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights) params) returns (uint256)",
+  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
+  "function approveRegistration(uint256 votingId, address voter)",
+  "function batchApproveRegistrations(uint256 votingId, address[] voters)",
+  "function rejectRegistration(uint256 votingId, address voter)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
   "function castQuadraticVote(uint256 votingId, uint256[] optionIndexes, uint256[] voteAmounts)",
@@ -110,18 +120,22 @@ export const VotingFactoryABI = [
   
   // 查询函数
   "function votingCount() view returns (uint256)",
-  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights))",
+  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance))",
   "function getAllVotingIds() view returns (uint256[])",
-  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights)[])",
+  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
   "function getVotingsByCreator(address creator) view returns (uint256[])",
   "function getVotingsByVoter(address voter) view returns (uint256[])",
   "function getVotingOptions(uint256 votingId) view returns (string[])",
   "function getVotingResult(uint256 votingId) view returns (uint256[] voteCounts, uint256 winningOption, uint256 totalVotes)",
   "function getUserVotingStatus(uint256 votingId, address user) view returns (bool registered, bool voted)",
+  "function getUserFullStatus(uint256 votingId, address user) view returns (bool registered, bool pending, bool voted)",
   "function getVotingState(uint256 votingId) view returns (uint8)",
-  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights)[])",
+  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
+  "function isPendingVoter(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
+  "function getPendingVoters(uint256 votingId) view returns (address[])",
+  "function getPendingCount(uint256 votingId) view returns (uint256)",
   "function getVoteRecords(uint256 votingId) view returns (address[] voters, uint256[] optionIndexes, uint256[] timestamps)",
   "function getRankedVoteRecords(uint256 votingId) view returns (address[] voters, uint256[][] rankings, uint256[] timestamps)",
   "function getVoterChoice(uint256 votingId, address voter) view returns (uint256 optionIndex, uint256 timestamp, bool voted)",
@@ -162,6 +176,17 @@ export const PrivacyLevel = {
 export type PrivacyLevel = (typeof PrivacyLevel)[keyof typeof PrivacyLevel];
 
 /**
+ * 注册规则
+ */
+export const RegistrationRule = {
+  Open: 0,
+  Approval: 1,
+  NFTHolder: 2,
+  TokenHolder: 3,
+} as const;
+export type RegistrationRule = (typeof RegistrationRule)[keyof typeof RegistrationRule];
+
+/**
  * 合约地址配置
  * ⚠️ 地址由部署脚本自动更新
  */
@@ -176,11 +201,11 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingFactory: "0xB06c856C8eaBd1d8321b687E188204C1018BC4E5",
-    registrationCenter: "0x26B862f640357268Bd2d9E95bc81553a2Aa81D7E",
-    votingCenter: "0xddE78e6202518FF4936b5302cC2891ec180E8bFf",
-    revealCenter: "0xA56F946D6398Dd7d9D4D9B337Cf9E0F68982ca5B",
-    statisticsCenter: "0x5D42EBdBBa61412295D7b0302d6F50aC449Ddb4F",
+    votingFactory: "0xDc64a140Aa3E981100a9becA4E685f962f0cF6C9",
+    registrationCenter: "0x5FbDB2315678afecb367f032d93F642f64180aa3",
+    votingCenter: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
+    revealCenter: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
+    statisticsCenter: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
   },
 } as const;
 

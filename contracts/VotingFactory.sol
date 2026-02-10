@@ -8,6 +8,14 @@ import "./RevealCenter.sol";
 import "./StatisticsCenter.sol";
 
 /**
+ * @notice ERC-20/ERC-721 通用接口（仅 balanceOf）
+ * @dev 用于 NFT 持有者 / Token 持有者注册规则验证
+ */
+interface IERC20OrNFT {
+    function balanceOf(address owner) external view returns (uint256);
+}
+
+/**
  * @title VotingFactory
  * @notice 投票工厂合约 - 统一入口，调用三个模块化中心合约
  * @dev 创建和管理投票实例，实际业务由 RegistrationCenter、VotingCenter、RevealCenter 处理
@@ -34,6 +42,15 @@ contract VotingFactory is IVotingTypes {
     /// @notice 结果揭示事件
     event ResultRevealed(uint256 indexed votingId, uint256 winningOption);
 
+    /// @notice 注册申请事件（审核模式）
+    event RegistrationRequested(uint256 indexed votingId, address indexed voter);
+    
+    /// @notice 注册审批通过事件
+    event RegistrationApproved(uint256 indexed votingId, address indexed voter);
+    
+    /// @notice 注册拒绝事件
+    event RegistrationRejected(uint256 indexed votingId, address indexed voter);
+
     /// @notice 投票基本信息结构（不包含由中心合约管理的数据）
     struct VotingInfo {
         uint256 id;
@@ -54,6 +71,9 @@ contract VotingFactory is IVotingTypes {
         uint16 visibilityBitmap;  // 可见性配置位图 (每项2位: 0=隐藏,1=创建者,2=参与者,3=公开)
         string[] weightGroupNames;    // 加权投票：权重分组名称
         uint256[] weightGroupWeights; // 加权投票：权重分组权重值
+        RegistrationRule registrationRule;  // 注册规则
+        address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
+        uint256 tokenMinBalance;       // 最低持有数量（NFTHolder 默认1，TokenHolder 由创建者设定）
     }
 
     /// @notice 投票详情结构（包含聚合数据）
@@ -80,6 +100,9 @@ contract VotingFactory is IVotingTypes {
         uint16 visibilityBitmap;  // 可见性配置位图
         string[] weightGroupNames;    // 加权投票：权重分组名称
         uint256[] weightGroupWeights; // 加权投票：权重分组权重值
+        RegistrationRule registrationRule;  // 注册规则
+        address tokenContractAddress;  // NFT/Token 合约地址
+        uint256 tokenMinBalance;       // 最低持有数量
     }
 
     /// @notice 创建投票参数结构
@@ -101,6 +124,9 @@ contract VotingFactory is IVotingTypes {
         uint256[] whitelistGroupIndexes; // 白名单地址对应的权重分组索引（加权+白名单时使用）
         string[] weightGroupNames;    // 加权投票：权重分组名称
         uint256[] weightGroupWeights; // 加权投票：权重分组权重值
+        RegistrationRule registrationRule;  // 注册规则
+        address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
+        uint256 tokenMinBalance;       // 最低持有数量
     }
 
     // ==================== 模块化中心合约 ====================
@@ -278,6 +304,15 @@ contract VotingFactory is IVotingTypes {
         voting.createdAt = block.timestamp;
         voting.autoAdvance = params.autoAdvance;
         voting.visibilityBitmap = params.visibilityBitmap;
+        voting.registrationRule = params.registrationRule;
+
+        // NFT/Token 持有者模式：存储合约地址和最低持有量
+        if (params.registrationRule == RegistrationRule.NFTHolder || params.registrationRule == RegistrationRule.TokenHolder) {
+            require(params.tokenContractAddress != address(0), "Token contract address required");
+            require(params.tokenMinBalance > 0, "Min balance must be > 0");
+            voting.tokenContractAddress = params.tokenContractAddress;
+            voting.tokenMinBalance = params.tokenMinBalance;
+        }
 
         // 加权投票：存储权重分组
         if (params.votingRule == VotingRule.Weighted) {
@@ -366,6 +401,7 @@ contract VotingFactory is IVotingTypes {
      * @notice 注册为选民 - 调用 RegistrationCenter
      * @param votingId 投票ID
      * @dev 自动推进模式使用有效状态检查，手动模式使用存储状态检查
+     *      审核模式下，此函数会将选民加入待审核列表而非直接注册
      */
     function registerVoter(uint256 votingId)
         external
@@ -381,9 +417,28 @@ contract VotingFactory is IVotingTypes {
             require(voting.state == VotingState.Registration, "Invalid state");
         }
 
-        // 调用注册中心进行注册
-        bool success = registrationCenter.registerVoter(votingId, msg.sender);
-        require(success, "Registration failed");
+        // 审核模式：进入待审核列表
+        if (voting.registrationRule == RegistrationRule.Approval) {
+            require(
+                registrationCenter.requestRegistration(votingId, msg.sender),
+                "Registration request failed"
+            );
+            emit RegistrationRequested(votingId, msg.sender);
+            return;
+        }
+
+        // NFT/Token 持有者模式：验证链上持有量
+        if (voting.registrationRule == RegistrationRule.NFTHolder || voting.registrationRule == RegistrationRule.TokenHolder) {
+            require(voting.tokenContractAddress != address(0), "Token contract not set");
+            IERC20OrNFT token = IERC20OrNFT(voting.tokenContractAddress);
+            require(token.balanceOf(msg.sender) >= voting.tokenMinBalance, "Insufficient token balance");
+        }
+
+        // 直接注册（开放 / NFT / Token 模式均走此路径）
+        require(
+            registrationCenter.registerVoter(votingId, msg.sender),
+            "Registration failed"
+        );
 
         // 记录用户参与的投票
         voterParticipations[msg.sender].push(votingId);
@@ -401,6 +456,7 @@ contract VotingFactory is IVotingTypes {
      * @param votingId 投票ID
      * @param groupIndex 权重分组索引
      * @dev 仅在投票规则为 Weighted 时使用
+     *      审核模式下，此函数会将选民加入待审核列表而非直接注册
      */
     function registerVoterWeighted(uint256 votingId, uint256 groupIndex)
         external
@@ -423,9 +479,28 @@ contract VotingFactory is IVotingTypes {
         // 获取分组权重
         uint256 weight = voting.weightGroupWeights[groupIndex];
 
-        // 调用注册中心进行带权重注册
-        bool success = registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex);
-        require(success, "Registration failed");
+        // 审核模式：进入待审核列表（带权重信息）
+        if (voting.registrationRule == RegistrationRule.Approval) {
+            require(
+                registrationCenter.requestRegistrationWeighted(votingId, msg.sender, weight, groupIndex),
+                "Registration request failed"
+            );
+            emit RegistrationRequested(votingId, msg.sender);
+            return;
+        }
+
+        // NFT/Token 持有者模式：验证链上持有量
+        if (voting.registrationRule == RegistrationRule.NFTHolder || voting.registrationRule == RegistrationRule.TokenHolder) {
+            require(voting.tokenContractAddress != address(0), "Token contract not set");
+            IERC20OrNFT token = IERC20OrNFT(voting.tokenContractAddress);
+            require(token.balanceOf(msg.sender) >= voting.tokenMinBalance, "Insufficient token balance");
+        }
+
+        // 直接注册（开放 / NFT / Token 模式均走此路径）
+        require(
+            registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex),
+            "Registration failed"
+        );
 
         // 记录用户参与的投票
         voterParticipations[msg.sender].push(votingId);
@@ -684,6 +759,89 @@ contract VotingFactory is IVotingTypes {
         emit StateChanged(votingId, VotingState.Finalized);
     }
 
+    // ==================== 审核模式函数 ====================
+
+    /**
+     * @notice 审批通过注册申请（仅创建者可调用）
+     * @param votingId 投票ID
+     * @param voter 选民地址
+     */
+    function approveRegistration(uint256 votingId, address voter)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            msg.sender == voting.creator || msg.sender == owner,
+            "Not authorized"
+        );
+        require(voting.registrationRule == RegistrationRule.Approval, "Not approval mode");
+
+        bool success = registrationCenter.approveRegistration(votingId, voter);
+        require(success, "Approval failed");
+
+        // 记录用户参与的投票
+        voterParticipations[voter].push(votingId);
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoterRegistered(votingId, voter);
+        }
+
+        emit RegistrationApproved(votingId, voter);
+        emit VoterRegistered(votingId, voter);
+    }
+
+    /**
+     * @notice 批量审批通过注册申请（仅创建者可调用）
+     * @param votingId 投票ID
+     * @param voters 选民地址列表
+     */
+    function batchApproveRegistrations(uint256 votingId, address[] calldata voters)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            msg.sender == voting.creator || msg.sender == owner,
+            "Not authorized"
+        );
+        require(voting.registrationRule == RegistrationRule.Approval, "Not approval mode");
+
+        registrationCenter.batchApproveRegistrations(votingId, voters);
+
+        for (uint256 i = 0; i < voters.length; i++) {
+            voterParticipations[voters[i]].push(votingId);
+            if (address(statisticsCenter) != address(0)) {
+                statisticsCenter.recordVoterRegistered(votingId, voters[i]);
+            }
+            emit RegistrationApproved(votingId, voters[i]);
+            emit VoterRegistered(votingId, voters[i]);
+        }
+    }
+
+    /**
+     * @notice 拒绝注册申请（仅创建者可调用）
+     * @param votingId 投票ID
+     * @param voter 选民地址
+     */
+    function rejectRegistration(uint256 votingId, address voter)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            msg.sender == voting.creator || msg.sender == owner,
+            "Not authorized"
+        );
+        require(voting.registrationRule == RegistrationRule.Approval, "Not approval mode");
+
+        bool success = registrationCenter.rejectRegistration(votingId, voter);
+        require(success, "Rejection failed");
+
+        emit RegistrationRejected(votingId, voter);
+    }
+
     // ==================== 查询函数 ====================
 
     /**
@@ -731,7 +889,10 @@ contract VotingFactory is IVotingTypes {
             autoAdvance: info.autoAdvance,
             visibilityBitmap: info.visibilityBitmap,
             weightGroupNames: info.weightGroupNames,
-            weightGroupWeights: info.weightGroupWeights
+            weightGroupWeights: info.weightGroupWeights,
+            registrationRule: info.registrationRule,
+            tokenContractAddress: info.tokenContractAddress,
+            tokenMinBalance: info.tokenMinBalance
         });
     }
 
@@ -871,6 +1032,68 @@ contract VotingFactory is IVotingTypes {
         }
         
         return result;
+    }
+
+    /**
+     * @notice 获取待审核选民列表 - 代理到 RegistrationCenter
+     * @param votingId 投票ID
+     * @return 待审核选民地址列表
+     */
+    function getPendingVoters(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (address[] memory)
+    {
+        return registrationCenter.getPendingVoters(votingId);
+    }
+
+    /**
+     * @notice 获取待审核选民数量 - 代理到 RegistrationCenter
+     * @param votingId 投票ID
+     * @return 待审核数量
+     */
+    function getPendingCount(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (uint256)
+    {
+        return registrationCenter.getPendingCount(votingId);
+    }
+
+    /**
+     * @notice 检查用户是否在待审核状态 - 代理到 RegistrationCenter
+     * @param votingId 投票ID
+     * @param voter 选民地址
+     * @return 是否待审核
+     */
+    function isPendingVoter(uint256 votingId, address voter)
+        external
+        view
+        returns (bool)
+    {
+        return registrationCenter.isPendingVoter(votingId, voter);
+    }
+
+    /**
+     * @notice 获取用户的完整注册状态（已注册 / 待审核 / 已投票）
+     * @param votingId 投票ID
+     * @param user 用户地址
+     * @return registered 是否已注册
+     * @return pending 是否待审核
+     * @return voted 是否已投票
+     */
+    function getUserFullStatus(uint256 votingId, address user)
+        external
+        view
+        votingExists(votingId)
+        returns (bool registered, bool pending, bool voted)
+    {
+        registered = registrationCenter.isEligibleVoter(votingId, user);
+        pending = registrationCenter.isPendingVoter(votingId, user);
+        voted = votingCenter.hasVoterVoted(votingId, user);
+        return (registered, pending, voted);
     }
 
     /**

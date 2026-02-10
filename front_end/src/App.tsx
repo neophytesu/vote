@@ -21,7 +21,7 @@ import {
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { useWallet, getChainName } from "@/hooks/useWallet";
 import type { WalletState } from "@/hooks/useWallet";
-import { VotingState, VotingRule, PrivacyLevel } from "@/contracts/abi";
+import { VotingState, VotingRule, PrivacyLevel, RegistrationRule } from "@/contracts/abi";
 import {
   encodeVisibilityBitmap,
   decodeVisibilityBitmap,
@@ -68,6 +68,7 @@ interface LocalProposal {
   privacy: PrivacyLevel;
   rule: VotingRule;
   isRegistered?: boolean;
+  isPending?: boolean;         // 是否待审核（审核模式）
   hasVoted?: boolean;
   creator: string;           // 创建者地址
   autoAdvance: boolean;      // 是否自动推进
@@ -78,10 +79,13 @@ interface LocalProposal {
   visibilityBitmap: number;  // 可见性配置位图
   weightGroupNames: string[];    // 加权投票：权重分组名称
   weightGroupWeights: number[];  // 加权投票：权重分组权重值
+  registrationRule: RegistrationRule;  // 注册规则
+  tokenContractAddress: string;  // NFT/Token 合约地址
+  tokenMinBalance: number;       // 最低持有数量
 }
 
 // 将合约数据转换为本地提案格式
-function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered: boolean; voted: boolean }): LocalProposal {
+function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered: boolean; pending?: boolean; voted: boolean }): LocalProposal {
   return {
     id: voting.id,
     title: voting.title,
@@ -95,6 +99,7 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     privacy: voting.privacyLevel,
     rule: voting.votingRule,
     isRegistered: userStatus?.registered ?? false,
+    isPending: userStatus?.pending ?? false,
     hasVoted: userStatus?.voted ?? false,
     creator: voting.creator,
     autoAdvance: voting.autoAdvance,
@@ -105,6 +110,9 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     visibilityBitmap: voting.visibilityBitmap,
     weightGroupNames: voting.weightGroupNames || [],
     weightGroupWeights: voting.weightGroupWeights || [],
+    registrationRule: voting.registrationRule ?? RegistrationRule.Open,
+    tokenContractAddress: voting.tokenContractAddress || "0x0000000000000000000000000000000000000000",
+    tokenMinBalance: voting.tokenMinBalance || 0,
   };
 }
 
@@ -649,6 +657,10 @@ interface ProposalCardProps {
   onLoadVoteRecords?: (proposalId: number) => Promise<VoteRecord[] | null>;
   onLoadRankedVoteRecords?: (proposalId: number) => Promise<RankedVoteRecord[] | null>;
   onLoadRegisteredVoters?: (proposalId: number) => Promise<string[] | null>;
+  onApproveRegistration?: (proposalId: number, voter: string) => void;
+  onRejectRegistration?: (proposalId: number, voter: string) => void;
+  onBatchApproveRegistrations?: (proposalId: number, voters: string[]) => void;
+  onLoadPendingVoters?: (proposalId: number) => Promise<string[]>;
 }
 
 // 选项颜色配置
@@ -661,12 +673,14 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
   const [showWeightGroupDialog, setShowWeightGroupDialog] = useState(false);
   const [selectedGroupIndex, setSelectedGroupIndex] = useState<number | null>(null);
+  const [showPendingDialog, setShowPendingDialog] = useState(false);
+  const [pendingVoters, setPendingVoters] = useState<string[]>([]);
   const [voterListAddresses, setVoterListAddresses] = useState<string[]>([]);
   const [loadingVoterList, setLoadingVoterList] = useState(false);
   const [voteRecords, setVoteRecords] = useState<VoteRecord[]>([]);
@@ -765,6 +779,30 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
           >
             <Timer className="w-3 h-3 inline mr-1" /> {proposal.autoAdvance ? "自动推进" : "手动推进"}
           </Badge>
+          {proposal.registrationRule === RegistrationRule.Approval && (
+            <Badge 
+              variant="outline" 
+              className="text-xs border-cyan-500/50 text-cyan-400"
+            >
+              <UserCheck className="w-3 h-3 inline mr-1" /> 创建者审核
+            </Badge>
+          )}
+          {proposal.registrationRule === RegistrationRule.NFTHolder && (
+            <Badge 
+              variant="outline" 
+              className="text-xs border-purple-500/50 text-purple-400"
+            >
+              <ImageIcon className="w-3 h-3 inline mr-1" /> NFT 持有者
+            </Badge>
+          )}
+          {proposal.registrationRule === RegistrationRule.TokenHolder && (
+            <Badge 
+              variant="outline" 
+              className="text-xs border-amber-500/50 text-amber-400"
+            >
+              <Coins className="w-3 h-3 inline mr-1" /> Token 持有者
+            </Badge>
+          )}
           {isCreator && (
             <Badge variant="outline" className="text-xs border-violet-500/50 text-violet-400">
               <Crown className="w-3 h-3 inline mr-1" /> 创建者
@@ -1240,12 +1278,107 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
               ) : (
                 <Button 
                   onClick={() => onRegister(proposal.id)}
-                  disabled={!wallet.isConnected || proposal.isRegistered}
-                  className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                  disabled={!wallet.isConnected || proposal.isRegistered || proposal.isPending}
+                  className={`flex-1 bg-gradient-to-r ${
+                    proposal.isPending 
+                      ? "from-yellow-500 to-amber-500 opacity-75 cursor-not-allowed" 
+                      : "from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600"
+                  } disabled:opacity-50`}
                 >
-                  {proposal.isRegistered ? "已注册" : "注册投票"}
+                  {proposal.isRegistered ? "已注册" : proposal.isPending ? "等待审核中..." : 
+                    proposal.registrationRule === RegistrationRule.Approval ? "申请注册" : 
+                    proposal.registrationRule === RegistrationRule.NFTHolder ? "验证 NFT 并注册" :
+                    proposal.registrationRule === RegistrationRule.TokenHolder ? "验证 Token 并注册" : "注册投票"}
                 </Button>
               )}
+              {/* 创建者审核面板入口 */}
+              {proposal.registrationRule === RegistrationRule.Approval && 
+                wallet.isConnected && wallet.address?.toLowerCase() === proposal.creator.toLowerCase() && (
+                <Button
+                  onClick={async () => {
+                    if (onLoadPendingVoters) {
+                      const voters = await onLoadPendingVoters(proposal.id);
+                      setPendingVoters(voters);
+                    }
+                    setShowPendingDialog(true);
+                  }}
+                  className="bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600"
+                  title="查看待审核的注册申请"
+                >
+                  <UserCheck className="w-4 h-4 mr-1" />
+                  审核注册
+                </Button>
+              )}
+              {/* 待审核选民审批弹窗 */}
+              <Dialog open={showPendingDialog} onOpenChange={setShowPendingDialog}>
+                <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-md">
+                  <DialogHeader>
+                    <DialogTitle className="text-zinc-100 flex items-center gap-2">
+                      <UserCheck className="w-5 h-5 text-cyan-400" />
+                      注册审核
+                    </DialogTitle>
+                    <DialogDescription className="text-zinc-400">
+                      审批或拒绝选民的注册申请
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="space-y-3 max-h-[400px] overflow-y-auto">
+                    {pendingVoters.length === 0 ? (
+                      <p className="text-zinc-500 text-sm text-center py-4">暂无待审核的申请</p>
+                    ) : (
+                      <>
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-sm text-zinc-400">共 {pendingVoters.length} 人待审核</span>
+                          <Button
+                            size="sm"
+                            onClick={() => {
+                              if (onBatchApproveRegistrations) {
+                                onBatchApproveRegistrations(proposal.id, pendingVoters);
+                                setShowPendingDialog(false);
+                              }
+                            }}
+                            className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 text-xs"
+                          >
+                            全部通过
+                          </Button>
+                        </div>
+                        {pendingVoters.map((voter) => (
+                          <div key={voter} className="flex items-center justify-between p-2 rounded-lg bg-zinc-800/50 border border-zinc-700/50">
+                            <span className="text-xs font-mono text-zinc-300 truncate max-w-[180px]" title={voter}>
+                              {voter.slice(0, 6)}...{voter.slice(-4)}
+                            </span>
+                            <div className="flex gap-1">
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  if (onApproveRegistration) {
+                                    onApproveRegistration(proposal.id, voter);
+                                    setPendingVoters(prev => prev.filter(v => v !== voter));
+                                  }
+                                }}
+                                className="bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30 text-xs h-7 px-2"
+                              >
+                                通过
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  if (onRejectRegistration) {
+                                    onRejectRegistration(proposal.id, voter);
+                                    setPendingVoters(prev => prev.filter(v => v !== voter));
+                                  }
+                                }}
+                                className="bg-rose-500/20 text-rose-400 hover:bg-rose-500/30 text-xs h-7 px-2"
+                              >
+                                拒绝
+                              </Button>
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
+                  </div>
+                </DialogContent>
+              </Dialog>
               {canAdvanceState && (
                 <Button 
                   onClick={() => onStartVoting(proposal.id)}
@@ -1879,6 +2012,9 @@ interface CreateProposalData {
   whitelistGroupIndexes: number[];  // 白名单地址对应的权重分组索引
   weightGroupNames: string[];    // 加权投票：权重分组名称
   weightGroupWeights: number[];  // 加权投票：权重分组权重值
+  registrationRule: RegistrationRule;  // 注册规则
+  tokenContractAddress: string;  // NFT/Token 合约地址
+  tokenMinBalance: number;       // 最低持有数量
 }
 
 interface CreateProposalCardProps {
@@ -1899,6 +2035,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
   const [rule, setRule] = useState<number>(VotingRule.SimpleMajority);
   const [privacy, setPrivacy] = useState<number>(PrivacyLevel.Public);
   const [registrationRule, setRegistrationRule] = useState<number>(0); // 0=开放, 1=审核, 2=NFT, 3=Token
+  const [tokenContractAddress, setTokenContractAddress] = useState(""); // NFT/Token 合约地址
+  const [tokenMinBalance, setTokenMinBalance] = useState(1); // 最低持有数量
   const [enableWhitelist, setEnableWhitelist] = useState(false); // 是否启用白名单
   const [whitelist, setWhitelist] = useState<string[]>([]); // 白名单地址列表
   const [whitelistInput, setWhitelistInput] = useState(""); // 白名单输入框
@@ -1945,6 +2083,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     setRule(VotingRule.SimpleMajority);
     setPrivacy(PrivacyLevel.Public);
     setRegistrationRule(0);
+    setTokenContractAddress("");
+    setTokenMinBalance(1);
     setEnableWhitelist(false);
     setWhitelist([]);
     setWhitelistInput("");
@@ -2046,6 +2186,11 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
         : [],
       weightGroupNames: rule === VotingRule.Weighted ? weightGroups.map(g => g.name) : [],
       weightGroupWeights: rule === VotingRule.Weighted ? weightGroups.map(g => g.weight) : [],
+      registrationRule: registrationRule as RegistrationRule,
+      tokenContractAddress: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
+        ? tokenContractAddress : "0x0000000000000000000000000000000000000000",
+      tokenMinBalance: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
+        ? tokenMinBalance : 0,
     };
 
     console.log("开始创建投票，参数:", newProposal);
@@ -2456,6 +2601,44 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                     </div>
                   </div>
 
+                  {/* NFT/Token 合约配置 - 选择 NFT 持有者或 Token 持有者时显示 */}
+                  {(registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) && (
+                    <div className="space-y-3 p-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5">
+                      <p className="text-sm text-cyan-400 font-medium">
+                        {registrationRule === RegistrationRule.NFTHolder ? "NFT 合约配置" : "Token 合约配置"}
+                      </p>
+                      <div className="space-y-2">
+                        <label className="text-xs text-zinc-400">
+                          {registrationRule === RegistrationRule.NFTHolder ? "ERC-721 合约地址" : "ERC-20 合约地址"}
+                        </label>
+                        <input
+                          type="text"
+                          value={tokenContractAddress}
+                          onChange={(e) => setTokenContractAddress(e.target.value)}
+                          placeholder="0x..."
+                          className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 font-mono placeholder-zinc-600 focus:border-cyan-500 focus:outline-none"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <label className="text-xs text-zinc-400">
+                          {registrationRule === RegistrationRule.NFTHolder ? "最低持有数量（NFT 个数）" : "最低持有数量（Token 数量）"}
+                        </label>
+                        <input
+                          type="number"
+                          value={tokenMinBalance}
+                          onChange={(e) => setTokenMinBalance(Math.max(1, parseInt(e.target.value) || 1))}
+                          min={1}
+                          className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-cyan-500 focus:outline-none"
+                        />
+                        <p className="text-xs text-zinc-500">
+                          {registrationRule === RegistrationRule.NFTHolder 
+                            ? "用户至少持有该数量的 NFT 才能注册" 
+                            : "用户至少持有该数量的 Token 才能注册（注意 Token 精度，如 USDT 为 6 位小数）"}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
                   {/* 白名单开关与配置 - 独立于注册规则 */}
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
@@ -2844,12 +3027,12 @@ function App() {
       try {
         const votings = await votingFactory.getAllVotings();
         
-        // 如果用户已连接，获取每个提案的用户状态
+        // 如果用户已连接，获取每个提案的用户状态（包含待审核状态）
         const localProposals: LocalProposal[] = [];
         for (const voting of votings) {
-          let userStatus = { registered: false, voted: false };
+          let userStatus = { registered: false, pending: false, voted: false };
           if (wallet.isConnected && wallet.address) {
-            userStatus = await votingFactory.getUserVotingStatus(voting.id, wallet.address);
+            userStatus = await votingFactory.getUserFullStatus(voting.id, wallet.address);
           }
           localProposals.push(convertToLocalProposal(voting, userStatus));
         }
@@ -2906,7 +3089,7 @@ function App() {
     loadUserStats();
   }, [wallet.isConnected, wallet.address, statisticsCenter, refreshTrigger]);
 
-  // 处理注册 - 调用真实合约
+  // 处理注册 - 调用真实合约（审核模式下为申请注册）
   const handleRegister = useCallback(async (proposalId: number) => {
     console.log("handleRegister: 点击注册, proposalId:", proposalId);
     if (!wallet.isConnected) {
@@ -2914,35 +3097,103 @@ function App() {
       return;
     }
     
-    console.log("handleRegister: 调用 votingFactory.registerVoter");
+    // 查找该提案判断是否审核模式
+    const proposal = proposals.find(p => p.id === proposalId);
+    const isApprovalMode = proposal?.registrationRule === RegistrationRule.Approval;
+    
+    console.log("handleRegister: 调用 votingFactory.registerVoter, 审核模式:", isApprovalMode);
     const success = await votingFactory.registerVoter(proposalId);
     console.log("handleRegister: 结果:", success, "error:", votingFactory.error);
     if (success) {
-      addToast("success", "注册成功", "您已成功注册为投票人");
+      if (isApprovalMode) {
+        addToast("info", "申请已提交", "请等待创建者审核您的注册申请");
+      } else {
+        addToast("success", "注册成功", "您已成功注册为投票人");
+      }
       refreshProposals();
     } else if (votingFactory.error) {
-      addToast("error", "注册失败", votingFactory.error);
+      addToast("error", isApprovalMode ? "申请失败" : "注册失败", votingFactory.error);
     }
-  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast, proposals]);
 
-  // 处理加权注册 - 调用真实合约
+  // 处理加权注册 - 调用真实合约（审核模式下为申请注册）
   const handleRegisterWeighted = useCallback(async (proposalId: number, groupIndex: number) => {
     console.log("handleRegisterWeighted: 点击加权注册, proposalId:", proposalId, "groupIndex:", groupIndex);
     if (!wallet.isConnected) {
       addToast("warning", "请先连接钱包");
       return;
     }
+
+    const proposal = proposals.find(p => p.id === proposalId);
+    const isApprovalMode = proposal?.registrationRule === RegistrationRule.Approval;
     
-    console.log("handleRegisterWeighted: 调用 votingFactory.registerVoterWeighted");
+    console.log("handleRegisterWeighted: 调用 votingFactory.registerVoterWeighted, 审核模式:", isApprovalMode);
     const success = await votingFactory.registerVoterWeighted(proposalId, groupIndex);
     console.log("handleRegisterWeighted: 结果:", success, "error:", votingFactory.error);
     if (success) {
-      addToast("success", "注册成功", "您已成功注册为加权投票人");
+      if (isApprovalMode) {
+        addToast("info", "申请已提交", "请等待创建者审核您的注册申请");
+      } else {
+        addToast("success", "注册成功", "您已成功注册为加权投票人");
+      }
       refreshProposals();
     } else if (votingFactory.error) {
-      addToast("error", "注册失败", votingFactory.error);
+      addToast("error", isApprovalMode ? "申请失败" : "注册失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理审批注册 - 调用真实合约（仅创建者）
+  const handleApproveRegistration = useCallback(async (proposalId: number, voter: string) => {
+    console.log("handleApproveRegistration: proposalId:", proposalId, "voter:", voter);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const success = await votingFactory.approveRegistration(proposalId, voter);
+    if (success) {
+      addToast("success", "审批通过", `已批准 ${voter.slice(0, 6)}...${voter.slice(-4)} 的注册`);
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "审批失败", votingFactory.error);
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 批量审批注册
+  const handleBatchApproveRegistrations = useCallback(async (proposalId: number, voters: string[]) => {
+    console.log("handleBatchApproveRegistrations: proposalId:", proposalId, "count:", voters.length);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const success = await votingFactory.batchApproveRegistrations(proposalId, voters);
+    if (success) {
+      addToast("success", "批量审批通过", `已批准 ${voters.length} 人的注册`);
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "批量审批失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 拒绝注册
+  const handleRejectRegistration = useCallback(async (proposalId: number, voter: string) => {
+    console.log("handleRejectRegistration: proposalId:", proposalId, "voter:", voter);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const success = await votingFactory.rejectRegistration(proposalId, voter);
+    if (success) {
+      addToast("success", "已拒绝", `已拒绝 ${voter.slice(0, 6)}...${voter.slice(-4)} 的注册申请`);
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "拒绝失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 获取待审核选民列表
+  const handleLoadPendingVoters = useCallback(async (proposalId: number): Promise<string[]> => {
+    return await votingFactory.getPendingVoters(proposalId);
+  }, [votingFactory]);
 
   // 处理投票 - 调用真实合约
   const handleVote = useCallback(async (proposalId: number, optionIndex: number) => {
@@ -3137,6 +3388,9 @@ function App() {
       whitelistGroupIndexes: proposalData.whitelistGroupIndexes || [],
       weightGroupNames: proposalData.weightGroupNames || [],
       weightGroupWeights: proposalData.weightGroupWeights || [],
+      registrationRule: proposalData.registrationRule ?? RegistrationRule.Open,
+      tokenContractAddress: proposalData.tokenContractAddress || "0x0000000000000000000000000000000000000000",
+      tokenMinBalance: proposalData.tokenMinBalance || 0,
     });
 
     if (votingId !== null) {
@@ -3288,6 +3542,10 @@ function App() {
                     onLoadVoteRecords={handleLoadVoteRecords}
                     onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
+                    onApproveRegistration={handleApproveRegistration}
+                    onRejectRegistration={handleRejectRegistration}
+                    onBatchApproveRegistrations={handleBatchApproveRegistrations}
+                    onLoadPendingVoters={handleLoadPendingVoters}
                   />
                 ))}
               </div>
@@ -3336,6 +3594,10 @@ function App() {
                         onLoadVoteRecords={handleLoadVoteRecords}
                         onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
+                        onApproveRegistration={handleApproveRegistration}
+                        onRejectRegistration={handleRejectRegistration}
+                        onBatchApproveRegistrations={handleBatchApproveRegistrations}
+                        onLoadPendingVoters={handleLoadPendingVoters}
                       />
                     ))
                 )}
@@ -3383,6 +3645,10 @@ function App() {
                         onLoadVoteRecords={handleLoadVoteRecords}
                         onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
+                        onApproveRegistration={handleApproveRegistration}
+                        onRejectRegistration={handleRejectRegistration}
+                        onBatchApproveRegistrations={handleBatchApproveRegistrations}
+                        onLoadPendingVoters={handleLoadPendingVoters}
                       />
                     ))
                 )}
@@ -3515,6 +3781,10 @@ function App() {
                             onLoadVoteRecords={handleLoadVoteRecords}
                             onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                             onLoadRegisteredVoters={handleLoadRegisteredVoters}
+                            onApproveRegistration={handleApproveRegistration}
+                            onRejectRegistration={handleRejectRegistration}
+                            onBatchApproveRegistrations={handleBatchApproveRegistrations}
+                            onLoadPendingVoters={handleLoadPendingVoters}
                           />
                         ))
                       )}

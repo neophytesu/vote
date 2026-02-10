@@ -21,6 +21,15 @@ contract RegistrationCenter is IVotingTypes {
     /// @notice 注册取消事件
     event RegistrationRevoked(uint256 indexed proposalId, address indexed voter);
 
+    /// @notice 注册申请事件（审核模式）
+    event RegistrationRequested(uint256 indexed proposalId, address indexed voter, uint256 timestamp);
+    
+    /// @notice 注册审批通过事件
+    event RegistrationApproved(uint256 indexed proposalId, address indexed voter, uint256 timestamp);
+    
+    /// @notice 注册审批拒绝事件
+    event RegistrationRejected(uint256 indexed proposalId, address indexed voter, uint256 timestamp);
+
     /// @notice 提案ID => 选民地址 => 是否已注册
     mapping(uint256 => mapping(address => bool)) public isRegistered;
     
@@ -35,6 +44,23 @@ contract RegistrationCenter is IVotingTypes {
     
     /// @notice 提案ID => 选民地址 => 所属权重分组索引
     mapping(uint256 => mapping(address => uint256)) public voterGroupIndex;
+
+    // ==================== 审核模式相关存储 ====================
+
+    /// @notice 提案ID => 选民地址 => 是否待审核
+    mapping(uint256 => mapping(address => bool)) public isPending;
+    
+    /// @notice 提案ID => 待审核选民列表（包含已处理的，需配合 isPending 过滤）
+    mapping(uint256 => address[]) private pendingVotersList;
+    
+    /// @notice 提案ID => 待审核数量
+    mapping(uint256 => uint256) public pendingCount;
+
+    /// @notice 提案ID => 选民地址 => 待审核时选择的权重（加权投票用，0=未设置）
+    mapping(uint256 => mapping(address => uint256)) public pendingWeight;
+    
+    /// @notice 提案ID => 选民地址 => 待审核时选择的分组索引
+    mapping(uint256 => mapping(address => uint256)) public pendingGroupIndex;
 
     /// @notice 主投票合约地址
     address public votingCore;
@@ -217,6 +243,194 @@ contract RegistrationCenter is IVotingTypes {
      */
     function getVoterCount(uint256 proposalId) external view returns (uint256) {
         return voterCount[proposalId];
+    }
+
+    // ==================== 审核模式功能 ====================
+
+    /**
+     * @notice 申请注册（审核模式 - 普通注册）
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return success 是否申请成功
+     */
+    function requestRegistration(
+        uint256 proposalId,
+        address voter
+    ) external onlyVotingCore returns (bool success) {
+        require(!isRegistered[proposalId][voter], "Already registered");
+        require(!isPending[proposalId][voter], "Already pending");
+        require(voter != address(0), "Invalid voter address");
+
+        isPending[proposalId][voter] = true;
+        pendingVotersList[proposalId].push(voter);
+        pendingCount[proposalId]++;
+
+        emit RegistrationRequested(proposalId, voter, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 申请注册（审核模式 - 带权重）
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @param weight 投票权重
+     * @param groupIndex 所属权重分组索引
+     * @return success 是否申请成功
+     */
+    function requestRegistrationWeighted(
+        uint256 proposalId,
+        address voter,
+        uint256 weight,
+        uint256 groupIndex
+    ) external onlyVotingCore returns (bool success) {
+        require(!isRegistered[proposalId][voter], "Already registered");
+        require(!isPending[proposalId][voter], "Already pending");
+        require(voter != address(0), "Invalid voter address");
+        require(weight > 0, "Weight must be > 0");
+
+        isPending[proposalId][voter] = true;
+        pendingVotersList[proposalId].push(voter);
+        pendingCount[proposalId]++;
+        pendingWeight[proposalId][voter] = weight;
+        pendingGroupIndex[proposalId][voter] = groupIndex;
+
+        emit RegistrationRequested(proposalId, voter, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 审批通过注册申请
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return success 是否审批成功
+     */
+    function approveRegistration(
+        uint256 proposalId,
+        address voter
+    ) external onlyVotingCore returns (bool success) {
+        require(isPending[proposalId][voter], "Not pending");
+        require(!isRegistered[proposalId][voter], "Already registered");
+
+        // 从待审核移除
+        isPending[proposalId][voter] = false;
+        pendingCount[proposalId]--;
+
+        // 注册选民
+        isRegistered[proposalId][voter] = true;
+        registeredVoters[proposalId].push(voter);
+        voterCount[proposalId]++;
+
+        // 如果有待审核的权重设置，一并应用
+        uint256 weight = pendingWeight[proposalId][voter];
+        if (weight > 0) {
+            voterWeight[proposalId][voter] = weight;
+            voterGroupIndex[proposalId][voter] = pendingGroupIndex[proposalId][voter];
+            // 清理临时数据
+            delete pendingWeight[proposalId][voter];
+            delete pendingGroupIndex[proposalId][voter];
+        }
+
+        emit RegistrationApproved(proposalId, voter, block.timestamp);
+        emit VoterRegistered(proposalId, voter, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 批量审批通过注册申请
+     * @param proposalId 提案ID
+     * @param voters 选民地址列表
+     */
+    function batchApproveRegistrations(
+        uint256 proposalId,
+        address[] calldata voters
+    ) external onlyVotingCore {
+        for (uint256 i = 0; i < voters.length; i++) {
+            if (isPending[proposalId][voters[i]] && !isRegistered[proposalId][voters[i]]) {
+                isPending[proposalId][voters[i]] = false;
+                pendingCount[proposalId]--;
+
+                isRegistered[proposalId][voters[i]] = true;
+                registeredVoters[proposalId].push(voters[i]);
+                voterCount[proposalId]++;
+
+                uint256 weight = pendingWeight[proposalId][voters[i]];
+                if (weight > 0) {
+                    voterWeight[proposalId][voters[i]] = weight;
+                    voterGroupIndex[proposalId][voters[i]] = pendingGroupIndex[proposalId][voters[i]];
+                    delete pendingWeight[proposalId][voters[i]];
+                    delete pendingGroupIndex[proposalId][voters[i]];
+                }
+
+                emit RegistrationApproved(proposalId, voters[i], block.timestamp);
+                emit VoterRegistered(proposalId, voters[i], block.timestamp);
+            }
+        }
+    }
+
+    /**
+     * @notice 拒绝注册申请
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return success 是否拒绝成功
+     */
+    function rejectRegistration(
+        uint256 proposalId,
+        address voter
+    ) external onlyVotingCore returns (bool success) {
+        require(isPending[proposalId][voter], "Not pending");
+
+        isPending[proposalId][voter] = false;
+        pendingCount[proposalId]--;
+
+        // 清理临时数据
+        delete pendingWeight[proposalId][voter];
+        delete pendingGroupIndex[proposalId][voter];
+
+        emit RegistrationRejected(proposalId, voter, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 获取待审核选民列表（过滤已处理的）
+     * @param proposalId 提案ID
+     * @return 待审核选民地址列表
+     */
+    function getPendingVoters(uint256 proposalId) external view returns (address[] memory) {
+        address[] storage allPending = pendingVotersList[proposalId];
+        uint256 count = pendingCount[proposalId];
+        
+        if (count == 0) {
+            return new address[](0);
+        }
+
+        address[] memory result = new address[](count);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < allPending.length && idx < count; i++) {
+            if (isPending[proposalId][allPending[i]]) {
+                result[idx] = allPending[i];
+                idx++;
+            }
+        }
+        return result;
+    }
+
+    /**
+     * @notice 获取待审核选民数量
+     * @param proposalId 提案ID
+     * @return 待审核数量
+     */
+    function getPendingCount(uint256 proposalId) external view returns (uint256) {
+        return pendingCount[proposalId];
+    }
+
+    /**
+     * @notice 检查选民是否在待审核状态
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     * @return 是否待审核
+     */
+    function isPendingVoter(uint256 proposalId, address voter) external view returns (bool) {
+        return isPending[proposalId][voter];
     }
 }
 

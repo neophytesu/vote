@@ -31,6 +31,14 @@ interface IVotingTypes {
         FullPrivacy     // 完全隐私 (Semaphore + 同态加密)
     }
 
+    /// @notice 注册规则
+    enum RegistrationRule {
+        Open,           // 开放注册 - 任何人可注册
+        Approval,       // 创建者审核 - 需创建者批准
+        NFTHolder,      // NFT 持有者 - 持有指定 NFT（预留）
+        TokenHolder     // Token 持有者 - 持有指定 Token（预留）
+    }
+
     /// @notice 提案配置
     struct ProposalConfig {
         string title;              // 提案标题

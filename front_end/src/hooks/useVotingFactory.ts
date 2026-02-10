@@ -6,6 +6,7 @@ import {
   VotingState,
   VotingRule,
   PrivacyLevel,
+  RegistrationRule,
   getContractAddresses,
 } from "@/contracts/abi";
 
@@ -35,6 +36,9 @@ export interface VotingDetails {
   visibilityBitmap: number;  // 可见性配置位图
   weightGroupNames: string[];    // 加权投票：权重分组名称
   weightGroupWeights: number[];  // 加权投票：权重分组权重值
+  registrationRule: RegistrationRule;  // 注册规则
+  tokenContractAddress: string;  // NFT/Token 合约地址
+  tokenMinBalance: number;       // 最低持有数量
 }
 
 /**
@@ -58,6 +62,9 @@ export interface CreateVotingParams {
   whitelistGroupIndexes: number[];  // 白名单地址对应的权重分组索引
   weightGroupNames: string[];    // 加权投票：权重分组名称
   weightGroupWeights: number[];  // 加权投票：权重分组权重值
+  registrationRule: RegistrationRule;  // 注册规则
+  tokenContractAddress: string;  // NFT/Token 合约地址
+  tokenMinBalance: number;       // 最低持有数量
 }
 
 /**
@@ -153,6 +160,9 @@ export function useVotingFactory(chainId: number | null) {
       visibilityBitmap: bigint | number;
       weightGroupNames: string[];
       weightGroupWeights: bigint[];
+      registrationRule: number;
+      tokenContractAddress: string;
+      tokenMinBalance: bigint;
     };
 
     return {
@@ -178,6 +188,9 @@ export function useVotingFactory(chainId: number | null) {
       visibilityBitmap: Number(d.visibilityBitmap),
       weightGroupNames: d.weightGroupNames ? [...d.weightGroupNames] : [],
       weightGroupWeights: d.weightGroupWeights ? d.weightGroupWeights.map((w: bigint) => Number(w)) : [],
+      registrationRule: Number(d.registrationRule) as RegistrationRule,
+      tokenContractAddress: d.tokenContractAddress || "0x0000000000000000000000000000000000000000",
+      tokenMinBalance: Number(d.tokenMinBalance || 0),
     };
   };
 
@@ -213,6 +226,9 @@ export function useVotingFactory(chainId: number | null) {
           whitelistGroupIndexes: params.whitelistGroupIndexes || [],
           weightGroupNames: params.weightGroupNames || [],
           weightGroupWeights: params.weightGroupWeights || [],
+          registrationRule: params.registrationRule ?? 0,
+          tokenContractAddress: params.tokenContractAddress || "0x0000000000000000000000000000000000000000",
+          tokenMinBalance: params.tokenMinBalance || 0,
         });
         
         console.log("useVotingFactory: 交易已发送, hash:", tx.hash);
@@ -340,6 +356,135 @@ export function useVotingFactory(chainId: number | null) {
       }
     },
     [getContract]
+  );
+
+  /**
+   * 审批通过注册申请（仅创建者）
+   */
+  const approveRegistration = useCallback(
+    async (votingId: number, voter: string): Promise<boolean> => {
+      console.log("approveRegistration: 开始, votingId:", votingId, "voter:", voter);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        const tx = await contract.approveRegistration(votingId, voter);
+        console.log("approveRegistration: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("approveRegistration: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("approveRegistration: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "审批注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 批量审批通过注册申请（仅创建者）
+   */
+  const batchApproveRegistrations = useCallback(
+    async (votingId: number, voters: string[]): Promise<boolean> => {
+      console.log("batchApproveRegistrations: 开始, votingId:", votingId, "voters:", voters.length);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        const tx = await contract.batchApproveRegistrations(votingId, voters);
+        console.log("batchApproveRegistrations: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("batchApproveRegistrations: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("batchApproveRegistrations: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "批量审批失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 拒绝注册申请（仅创建者）
+   */
+  const rejectRegistration = useCallback(
+    async (votingId: number, voter: string): Promise<boolean> => {
+      console.log("rejectRegistration: 开始, votingId:", votingId, "voter:", voter);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        const tx = await contract.rejectRegistration(votingId, voter);
+        console.log("rejectRegistration: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("rejectRegistration: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("rejectRegistration: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "拒绝注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 获取待审核选民列表
+   */
+  const getPendingVoters = useCallback(
+    async (votingId: number): Promise<string[]> => {
+      try {
+        const contract = await getReadOnlyContract();
+        const list = await contract.getPendingVoters(votingId);
+        return Array.isArray(list) ? list.map((a: string) => String(a)) : [];
+      } catch (err) {
+        console.error("获取待审核选民列表失败:", err);
+        return [];
+      }
+    },
+    [getReadOnlyContract]
+  );
+
+  /**
+   * 获取用户完整注册状态（已注册 / 待审核 / 已投票）
+   */
+  const getUserFullStatus = useCallback(
+    async (
+      votingId: number,
+      address: string
+    ): Promise<{ registered: boolean; pending: boolean; voted: boolean }> => {
+      try {
+        const contract = await getReadOnlyContract();
+        const [registered, pending, voted] = await contract.getUserFullStatus(
+          votingId,
+          address
+        );
+        return { registered, pending, voted };
+      } catch {
+        return { registered: false, pending: false, voted: false };
+      }
+    },
+    [getReadOnlyContract]
   );
 
   /**
@@ -812,6 +957,11 @@ export function useVotingFactory(chainId: number | null) {
     startRegistration,
     registerVoter,
     registerVoterWeighted,
+    approveRegistration,
+    batchApproveRegistrations,
+    rejectRegistration,
+    getPendingVoters,
+    getUserFullStatus,
     startVoting,
     castVote,
     castQuadraticVote,
