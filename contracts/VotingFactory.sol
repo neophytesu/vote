@@ -476,6 +476,10 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
     {
         VotingInfo storage voting = votings[votingId];
+
+        // 排序选择和二次方投票需要使用专用函数
+        require(voting.votingRule != VotingRule.RankedChoice, "Use castRankedVote for ranked choice");
+        require(voting.votingRule != VotingRule.Quadratic, "Use castQuadraticVote for quadratic");
         
         // 自动推进模式：使用有效状态检查（包含时间限制）
         if (voting.autoAdvance) {
@@ -504,6 +508,99 @@ contract VotingFactory is IVotingTypes {
         }
 
         emit VoteCast(votingId, msg.sender, optionIndex);
+    }
+
+    /**
+     * @notice 二次方投票（多选项分配积分）
+     * @param votingId 投票ID
+     * @param optionIndexes 选项索引数组
+     * @param voteAmounts 每个选项的投票数量
+     */
+    function castQuadraticVote(
+        uint256 votingId,
+        uint256[] calldata optionIndexes,
+        uint256[] calldata voteAmounts
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+
+        // 验证投票规则必须是二次方投票
+        require(voting.votingRule == VotingRule.Quadratic, "Not quadratic voting");
+
+        // 状态检查（复用 castVote 逻辑）
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        // 检查是否已注册
+        require(
+            registrationCenter.isEligibleVoter(votingId, msg.sender),
+            "Not registered"
+        );
+
+        // 调用计票中心进行二次方投票（固定100积分）
+        bool success = votingCenter.castQuadraticVote(
+            votingId,
+            msg.sender,
+            optionIndexes,
+            voteAmounts,
+            100 // 固定100积分
+        );
+        require(success, "Quadratic vote failed");
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        // 使用第一个选项作为事件中的 optionIndex
+        emit VoteCast(votingId, msg.sender, optionIndexes[0]);
+    }
+
+    /**
+     * @notice 排序选择投票（选民对所有选项按偏好排序）
+     * @param votingId 投票ID
+     * @param rankedOptions 按偏好排序的选项索引数组（第1选择在前）
+     */
+    function castRankedVote(
+        uint256 votingId,
+        uint256[] calldata rankedOptions
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+
+        // 验证投票规则必须是排序选择
+        require(voting.votingRule == VotingRule.RankedChoice, "Not ranked choice voting");
+
+        // 状态检查
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        // 检查是否已注册
+        require(
+            registrationCenter.isEligibleVoter(votingId, msg.sender),
+            "Not registered"
+        );
+
+        // 调用计票中心
+        bool success = votingCenter.castRankedVote(votingId, msg.sender, rankedOptions);
+        require(success, "Ranked vote failed");
+
+        // 更新统计中心
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        emit VoteCast(votingId, msg.sender, rankedOptions[0]);
     }
 
     /**
@@ -557,7 +654,15 @@ contract VotingFactory is IVotingTypes {
         }
 
         // 从计票中心获取投票结果
-        uint256[] memory voteCounts = votingCenter.getAllVoteCounts(votingId);
+        uint256[] memory voteCounts;
+        if (voting.votingRule == VotingRule.RankedChoice) {
+            // 排序选择：使用 IRV 多轮淘汰算法计算最终票数
+            voteCounts = votingCenter.computeRankedResult(votingId);
+            // 将 IRV 最终票数回写到 voteCounts，使前端查询时能正确显示
+            votingCenter.writeRankedResultCounts(votingId, voteCounts);
+        } else {
+            voteCounts = votingCenter.getAllVoteCounts(votingId);
+        }
         uint256 totalVoters = registrationCenter.getVoterCount(votingId);
 
         // 调用揭示中心揭示结果
@@ -808,6 +913,26 @@ contract VotingFactory is IVotingTypes {
         )
     {
         return votingCenter.getVoteRecords(votingId);
+    }
+
+    /**
+     * @notice 获取排序选择投票的完整记录 - 代理到 VotingCenter
+     * @param votingId 投票ID
+     * @return voters 投票者地址数组
+     * @return rankings 每位投票者的完整排名
+     * @return timestamps 时间戳数组
+     */
+    function getRankedVoteRecords(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (
+            address[] memory voters,
+            uint256[][] memory rankings,
+            uint256[] memory timestamps
+        )
+    {
+        return votingCenter.getRankedVoteRecords(votingId);
     }
 
     /**

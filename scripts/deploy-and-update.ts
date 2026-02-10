@@ -154,6 +154,8 @@ export const VotingFactoryABI = [
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
+  "function castQuadraticVote(uint256 votingId, uint256[] optionIndexes, uint256[] voteAmounts)",
+  "function castRankedVote(uint256 votingId, uint256[] rankedOptions)",
   "function startTallying(uint256 votingId)",
   "function revealResult(uint256 votingId)",
   
@@ -172,6 +174,7 @@ export const VotingFactoryABI = [
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
   "function getVoteRecords(uint256 votingId) view returns (address[] voters, uint256[] optionIndexes, uint256[] timestamps)",
+  "function getRankedVoteRecords(uint256 votingId) view returns (address[] voters, uint256[][] rankings, uint256[] timestamps)",
   "function getVoterChoice(uint256 votingId, address voter) view returns (uint256 optionIndex, uint256 timestamp, bool voted)",
 ] as const;
 

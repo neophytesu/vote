@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-06T20:52:18.412Z
+ * 最后更新: 2026-02-10T13:55:28.046Z
  */
 
 export const VotingCoreABI = [
@@ -103,6 +103,8 @@ export const VotingFactoryABI = [
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
+  "function castQuadraticVote(uint256 votingId, uint256[] optionIndexes, uint256[] voteAmounts)",
+  "function castRankedVote(uint256 votingId, uint256[] rankedOptions)",
   "function startTallying(uint256 votingId)",
   "function revealResult(uint256 votingId)",
   
@@ -121,6 +123,7 @@ export const VotingFactoryABI = [
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
   "function getVoteRecords(uint256 votingId) view returns (address[] voters, uint256[] optionIndexes, uint256[] timestamps)",
+  "function getRankedVoteRecords(uint256 votingId) view returns (address[] voters, uint256[][] rankings, uint256[] timestamps)",
   "function getVoterChoice(uint256 votingId, address voter) view returns (uint256 optionIndex, uint256 timestamp, bool voted)",
 ] as const;
 
@@ -159,72 +162,6 @@ export const PrivacyLevel = {
 export type PrivacyLevel = (typeof PrivacyLevel)[keyof typeof PrivacyLevel];
 
 /**
- * 可见性级别
- */
-export const VisibilityLevel = {
-  Hidden: 0,
-  CreatorOnly: 1,
-  ParticipantsOnly: 2,
-  Public: 3,
-} as const;
-export type VisibilityLevel = (typeof VisibilityLevel)[keyof typeof VisibilityLevel];
-
-export interface VisibilityConfig {
-  voteCounts: VisibilityLevel;
-  voteDetails: VisibilityLevel;
-  voterList: VisibilityLevel;
-  progress: VisibilityLevel;
-  result: VisibilityLevel;
-}
-
-export function encodeVisibilityBitmap(config: VisibilityConfig): number {
-  return (
-    (config.voteCounts & 0x3) |
-    ((config.voteDetails & 0x3) << 2) |
-    ((config.voterList & 0x3) << 4) |
-    ((config.progress & 0x3) << 6) |
-    ((config.result & 0x3) << 8)
-  );
-}
-
-export function decodeVisibilityBitmap(bitmap: number): VisibilityConfig {
-  return {
-    voteCounts: (bitmap & 0x3) as VisibilityLevel,
-    voteDetails: ((bitmap >> 2) & 0x3) as VisibilityLevel,
-    voterList: ((bitmap >> 4) & 0x3) as VisibilityLevel,
-    progress: ((bitmap >> 6) & 0x3) as VisibilityLevel,
-    result: ((bitmap >> 8) & 0x3) as VisibilityLevel,
-  };
-}
-
-export const DEFAULT_VISIBILITY_CONFIG: VisibilityConfig = {
-  voteCounts: VisibilityLevel.CreatorOnly,
-  voteDetails: VisibilityLevel.CreatorOnly,
-  voterList: VisibilityLevel.CreatorOnly,
-  progress: VisibilityLevel.CreatorOnly,
-  result: VisibilityLevel.Public,
-};
-
-export function checkVisibility(
-  level: VisibilityLevel,
-  isCreator: boolean,
-  isParticipant: boolean
-): boolean {
-  switch (level) {
-    case VisibilityLevel.Hidden:
-      return false;
-    case VisibilityLevel.CreatorOnly:
-      return isCreator;
-    case VisibilityLevel.ParticipantsOnly:
-      return isCreator || isParticipant;
-    case VisibilityLevel.Public:
-      return true;
-    default:
-      return false;
-  }
-}
-
-/**
  * 合约地址配置
  * ⚠️ 地址由部署脚本自动更新
  */
@@ -239,11 +176,11 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingFactory: "0x1429859428C0aBc9C2C47C8Ee9FBaf82cFA0F20f",
-    registrationCenter: "0x7bc06c482DEAd17c0e297aFbC32f6e63d3846650",
-    votingCenter: "0xcbEAF3BDe82155F56486Fb5a1072cb8baAf547cc",
-    revealCenter: "0xc351628EB244ec633d5f21fBD6621e1a683B1181",
-    statisticsCenter: "0xFD471836031dc5108809D173A067e8486B9047A3",
+    votingFactory: "0xB06c856C8eaBd1d8321b687E188204C1018BC4E5",
+    registrationCenter: "0x26B862f640357268Bd2d9E95bc81553a2Aa81D7E",
+    votingCenter: "0xddE78e6202518FF4936b5302cC2891ec180E8bFf",
+    revealCenter: "0xA56F946D6398Dd7d9D4D9B337Cf9E0F68982ca5B",
+    statisticsCenter: "0x5D42EBdBBa61412295D7b0302d6F50aC449Ddb4F",
   },
 } as const;
 

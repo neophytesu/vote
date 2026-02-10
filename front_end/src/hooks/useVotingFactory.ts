@@ -405,8 +405,68 @@ export function useVotingFactory(chainId: number | null) {
   );
 
   /**
+   * 二次方投票（多选项分配积分）
+   */
+  const castQuadraticVote = useCallback(
+    async (votingId: number, optionIndexes: number[], voteAmounts: number[]): Promise<boolean> => {
+      console.log("castQuadraticVote: 开始, votingId:", votingId, "options:", optionIndexes, "amounts:", voteAmounts);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        const tx = await contract.castQuadraticVote(votingId, optionIndexes, voteAmounts);
+        console.log("castQuadraticVote: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("castQuadraticVote: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("castQuadraticVote: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "二次方投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
    * 开始计票
    */
+  /**
+   * 排序选择投票
+   */
+  const castRankedVote = useCallback(
+    async (votingId: number, rankedOptions: number[]): Promise<boolean> => {
+      console.log("castRankedVote: 开始, votingId:", votingId, "ranking:", rankedOptions);
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+
+      try {
+        const contract = await getContract();
+        const tx = await contract.castRankedVote(votingId, rankedOptions);
+        console.log("castRankedVote: 交易已发送, hash:", tx.hash);
+        await tx.wait();
+        console.log("castRankedVote: 交易已确认");
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        console.error("castRankedVote: 失败:", err);
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "排序选择投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
   const startTallying = useCallback(
     async (votingId: number): Promise<boolean> => {
       console.log("startTallying: 开始, votingId:", votingId);
@@ -684,6 +744,35 @@ export function useVotingFactory(chainId: number | null) {
   );
 
   /**
+   * 获取排序选择投票的完整记录（选民地址 + 完整排名 + 时间）
+   */
+  const getRankedVoteRecords = useCallback(
+    async (
+      votingId: number
+    ): Promise<{
+      voters: string[];
+      rankings: number[][];
+      timestamps: number[];
+    } | null> => {
+      try {
+        const contract = await getReadOnlyContract();
+        const [voters, rankings, timestamps] =
+          await contract.getRankedVoteRecords(votingId);
+        return {
+          voters: voters as string[],
+          rankings: (rankings as bigint[][]).map((r: bigint[]) =>
+            r.map((v: bigint) => Number(v))
+          ),
+          timestamps: (timestamps as bigint[]).map((t: bigint) => Number(t)),
+        };
+      } catch {
+        return null;
+      }
+    },
+    [getReadOnlyContract]
+  );
+
+  /**
    * 获取特定选民的投票选择
    */
   const getVoterChoice = useCallback(
@@ -725,6 +814,8 @@ export function useVotingFactory(chainId: number | null) {
     registerVoterWeighted,
     startVoting,
     castVote,
+    castQuadraticVote,
+    castRankedVote,
     startTallying,
     revealResult,
     getVoting,
@@ -735,6 +826,7 @@ export function useVotingFactory(chainId: number | null) {
     getUserVotingStatus,
     getVotingResult,
     getVoteRecords,
+    getRankedVoteRecords,
     getRegisteredVoters,
     getVoterChoice,
     clearError,

@@ -63,6 +63,7 @@ interface LocalProposal {
   status: VotingState;
   voteCounts: number[];
   totalVoters: number;
+  totalVotesCast: number;  // 独立的投票人数（来自合约，RCV 期间 voteCounts 为 0 但此值正确）
   endTime: string;
   privacy: PrivacyLevel;
   rule: VotingRule;
@@ -89,6 +90,7 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     status: voting.state,
     voteCounts: voting.voteCounts,
     totalVoters: voting.totalVoters,
+    totalVotesCast: voting.totalVotes,
     endTime: new Date(voting.votingEnd * 1000).toISOString(),
     privacy: voting.privacyLevel,
     rule: voting.votingRule,
@@ -626,17 +628,26 @@ interface VoteRecord {
   timestamp: number;
 }
 
+interface RankedVoteRecord {
+  voter: string;
+  ranking: number[];
+  timestamp: number;
+}
+
 interface ProposalCardProps {
   proposal: LocalProposal;
   wallet: WalletState;
   onRegister: (proposalId: number) => void;
   onRegisterWeighted: (proposalId: number, groupIndex: number) => void;
   onVote: (proposalId: number, optionIndex: number) => void;
+  onQuadraticVote: (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => void;
+  onRankedVote: (proposalId: number, rankedOptions: number[]) => void;
   onStartRegistration: (proposalId: number) => void;
   onStartVoting: (proposalId: number) => void;
   onStartTallying: (proposalId: number) => void;
   onRevealResult: (proposalId: number) => void;
   onLoadVoteRecords?: (proposalId: number) => Promise<VoteRecord[] | null>;
+  onLoadRankedVoteRecords?: (proposalId: number) => Promise<RankedVoteRecord[] | null>;
   onLoadRegisteredVoters?: (proposalId: number) => Promise<string[] | null>;
 }
 
@@ -650,7 +661,7 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
@@ -659,6 +670,7 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
   const [voterListAddresses, setVoterListAddresses] = useState<string[]>([]);
   const [loadingVoterList, setLoadingVoterList] = useState(false);
   const [voteRecords, setVoteRecords] = useState<VoteRecord[]>([]);
+  const [rankedVoteRecords, setRankedVoteRecords] = useState<RankedVoteRecord[]>([]);
   const [notVotedAddresses, setNotVotedAddresses] = useState<string[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
   const status = statusConfig[proposal.status];
@@ -763,57 +775,96 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
         {/* 投票进度 - 支持多选项，根据可见性配置控制显示 */}
         {proposal.status === VotingState.Voting || proposal.status === VotingState.Finalized ? (
           <div className="space-y-3">
-            {/* 各选项票数 - 根据可见性控制 */}
-            {(proposal.status === VotingState.Finalized ? canViewResult : canViewVoteCounts) ? (
-              <div className="space-y-2">
-                {proposal.options.map((option, index) => {
-                  const color = optionColorConfig[index % optionColorConfig.length];
-                  const votes = proposal.voteCounts[index] || 0;
-                  const percentage = optionPercentages[index];
-                  const isLeading = index === leadingIndex && totalVotes > 0;
-                  
-                  return (
-                    <div key={index} className="space-y-1">
-                      <div className="flex justify-between items-center text-sm">
-                        <span className={`${color.text} flex items-center gap-1.5`}>
-                          {isLeading && <Crown className="w-3 h-3 inline mr-1" />}
-                          {option}
-                        </span>
-                        <span className="text-zinc-400">
-                          {votes.toLocaleString()} ({percentage.toFixed(1)}%)
-                        </span>
-                      </div>
-                      <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
-                          style={{ width: `${percentage}%` }}
-                        />
-                      </div>
+            {/* 排序选择投票：投票阶段只显示参与人数，不显示逐选项票数 */}
+            {proposal.rule === VotingRule.RankedChoice && proposal.status === VotingState.Voting ? (
+              canViewProgress ? (
+                <div className="space-y-3">
+                  <div className="flex flex-col items-center py-4 space-y-2">
+                    <div className="flex items-center gap-2 text-zinc-300">
+                      <Users className="w-5 h-5 text-violet-400" />
+                      <span className="text-lg font-semibold">
+                        已投票 {proposal.totalVotesCast.toLocaleString()} / {proposal.totalVoters.toLocaleString()} 人
+                      </span>
                     </div>
-                  );
-                })}
-              </div>
+                    <div className="w-full h-3 bg-zinc-800 rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all duration-500"
+                        style={{ width: `${proposal.totalVoters > 0 ? (proposal.totalVotesCast / proposal.totalVoters) * 100 : 0}%` }}
+                      />
+                    </div>
+                    <p className="text-xs text-zinc-500">
+                      排序选择投票 · 结果将在揭示阶段通过逐轮淘汰计算
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-4 text-center">
+                  <EyeOff className="w-5 h-5 mx-auto text-zinc-600 mb-2" />
+                  <p className="text-sm text-zinc-500">进度未公开</p>
+                </div>
+              )
             ) : (
-              <div className="py-4 text-center">
-                <EyeOff className="w-5 h-5 mx-auto text-zinc-600 mb-2" />
-                <p className="text-sm text-zinc-500">
-                  {proposal.status === VotingState.Finalized ? "结果未公开" : "票数未公开"}
-                </p>
-                <p className="text-xs text-zinc-600 mt-1">
-                  {isCreator ? "" : isParticipant ? "仅创建者可见" : "仅参与者可见"}
-                </p>
-              </div>
-            )}
-            
-            {/* 参与率 - 根据进度可见性控制 */}
-            {canViewProgress ? (
-              <p className="text-xs text-zinc-500 text-center pt-1">
-                参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
-              </p>
-            ) : (
-              <p className="text-xs text-zinc-600 text-center pt-1">
-                进度信息未公开
-              </p>
+              <>
+                {/* 各选项票数 - 根据可见性控制 */}
+                {(proposal.status === VotingState.Finalized ? canViewResult : canViewVoteCounts) ? (
+                  <div className="space-y-2">
+                    {proposal.options.map((option, index) => {
+                      const color = optionColorConfig[index % optionColorConfig.length];
+                      const votes = proposal.voteCounts[index] || 0;
+                      const percentage = optionPercentages[index];
+                      const isLeading = index === leadingIndex && totalVotes > 0;
+                      
+                      return (
+                        <div key={index} className="space-y-1">
+                          <div className="flex justify-between items-center text-sm">
+                            <span className={`${color.text} flex items-center gap-1.5`}>
+                              {isLeading && <Crown className="w-3 h-3 inline mr-1" />}
+                              {option}
+                            </span>
+                            <span className="text-zinc-400">
+                              {votes.toLocaleString()} ({percentage.toFixed(1)}%)
+                            </span>
+                          </div>
+                          <div className="h-2 bg-zinc-800 rounded-full overflow-hidden">
+                            <div
+                              className={`h-full bg-gradient-to-r ${color.gradient} transition-all duration-500`}
+                              style={{ width: `${percentage}%` }}
+                            />
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="py-4 text-center">
+                    <EyeOff className="w-5 h-5 mx-auto text-zinc-600 mb-2" />
+                    <p className="text-sm text-zinc-500">
+                      {proposal.status === VotingState.Finalized ? "结果未公开" : "票数未公开"}
+                    </p>
+                    <p className="text-xs text-zinc-600 mt-1">
+                      {isCreator ? "" : isParticipant ? "仅创建者可见" : "仅参与者可见"}
+                    </p>
+                  </div>
+                )}
+                
+                {/* RCV 已完成提示 */}
+                {proposal.rule === VotingRule.RankedChoice && proposal.status === VotingState.Finalized && canViewResult && (
+                  <p className="text-xs text-violet-400/70 text-center pt-1">
+                    以上为即时决选（IRV）逐轮淘汰后的最终票数
+                  </p>
+                )}
+
+                {/* 参与率 - 根据进度可见性控制 */}
+                {canViewProgress ? (
+                  <p className="text-xs text-zinc-500 text-center pt-1">
+                    参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
+                  </p>
+                ) : (
+                  <p className="text-xs text-zinc-600 text-center pt-1">
+                    进度信息未公开
+                  </p>
+                )}
+              </>
             )}
           </div>
         ) : (
@@ -913,15 +964,28 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                 <DialogTrigger asChild>
                   <button
                     onClick={async () => {
-                      if (voteRecords.length === 0 && !loadingRecords) {
+                      if (voteRecords.length === 0 && rankedVoteRecords.length === 0 && !loadingRecords) {
                         setLoadingRecords(true);
-                        const records = onLoadVoteRecords ? await onLoadVoteRecords(proposal.id) : null;
-                        if (records) setVoteRecords(records);
-                        if (onLoadRegisteredVoters) {
-                          const registered = await onLoadRegisteredVoters(proposal.id);
-                          if (registered) {
-                            const votedSet = new Set((records || []).map((r) => r.voter.toLowerCase()));
-                            setNotVotedAddresses(registered.filter((addr) => !votedSet.has(addr.toLowerCase())));
+                        // RCV 提案加载完整排名记录
+                        if (proposal.rule === VotingRule.RankedChoice && onLoadRankedVoteRecords) {
+                          const ranked = await onLoadRankedVoteRecords(proposal.id);
+                          if (ranked) setRankedVoteRecords(ranked);
+                          if (onLoadRegisteredVoters) {
+                            const registered = await onLoadRegisteredVoters(proposal.id);
+                            if (registered) {
+                              const votedSet = new Set((ranked || []).map((r) => r.voter.toLowerCase()));
+                              setNotVotedAddresses(registered.filter((addr) => !votedSet.has(addr.toLowerCase())));
+                            }
+                          }
+                        } else {
+                          const records = onLoadVoteRecords ? await onLoadVoteRecords(proposal.id) : null;
+                          if (records) setVoteRecords(records);
+                          if (onLoadRegisteredVoters) {
+                            const registered = await onLoadRegisteredVoters(proposal.id);
+                            if (registered) {
+                              const votedSet = new Set((records || []).map((r) => r.voter.toLowerCase()));
+                              setNotVotedAddresses(registered.filter((addr) => !votedSet.has(addr.toLowerCase())));
+                            }
                           }
                         }
                         setLoadingRecords(false);
@@ -941,37 +1005,81 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                       投票详情 - {proposal.title}
                     </DialogTitle>
                     <DialogDescription className="text-zinc-400">
-                      共 {voteRecords.length} 人已投票，{notVotedAddresses.length} 人未投票
+                      共 {proposal.rule === VotingRule.RankedChoice ? rankedVoteRecords.length : voteRecords.length} 人已投票，{notVotedAddresses.length} 人未投票
                     </DialogDescription>
                   </DialogHeader>
                   
                   <div className="flex-1 overflow-y-auto space-y-2 pr-2">
-                    {voteRecords.length > 0 ? (
-                      voteRecords.map((record, idx) => {
-                        const color = optionColorConfig[record.optionIndex % optionColorConfig.length];
-                        const optionName = proposal.options[record.optionIndex] || `选项${record.optionIndex + 1}`;
-                        const voteTime = new Date(record.timestamp * 1000).toLocaleString();
-                        return (
-                          <div 
-                            key={`voted-${idx}`} 
-                            className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
-                          >
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm text-zinc-300 font-mono break-all">
-                                {record.voter}
-                              </p>
-                              <p className="text-xs text-zinc-500 mt-1">
-                                投票时间: {voteTime}
-                              </p>
-                            </div>
-                            <div className={`shrink-0 px-3 py-1.5 rounded-lg bg-gradient-to-r ${color.gradient} text-white text-sm font-medium`}>
-                              {optionName}
-                            </div>
-                          </div>
-                        );
-                      })
-                    ) : null}
-                    {/* 未投票的人 - 与上面卡片样式一致 */}
+                    {/* RCV 排序投票详情 */}
+                    {proposal.rule === VotingRule.RankedChoice ? (
+                      <>
+                        {rankedVoteRecords.length > 0 ? (
+                          rankedVoteRecords.map((record, idx) => {
+                            const voteTime = new Date(record.timestamp * 1000).toLocaleString();
+                            return (
+                              <div
+                                key={`ranked-${idx}`}
+                                className="bg-zinc-800/50 rounded-lg p-3 space-y-2"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <p className="text-sm text-zinc-300 font-mono break-all">
+                                    {record.voter}
+                                  </p>
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  {record.ranking.map((optIdx, rank) => {
+                                    const color = optionColorConfig[optIdx % optionColorConfig.length];
+                                    const optionName = proposal.options[optIdx] || `选项${optIdx + 1}`;
+                                    return (
+                                      <div key={rank} className="flex items-center gap-1">
+                                        {rank > 0 && <span className="text-zinc-600 text-xs">→</span>}
+                                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-gradient-to-r ${color.gradient} text-white`}>
+                                          <span className="opacity-70">#{rank + 1}</span>
+                                          {optionName}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                                <p className="text-xs text-zinc-500">
+                                  投票时间: {voteTime}
+                                </p>
+                              </div>
+                            );
+                          })
+                        ) : null}
+                      </>
+                    ) : (
+                      <>
+                        {/* 普通投票详情 */}
+                        {voteRecords.length > 0 ? (
+                          voteRecords.map((record, idx) => {
+                            const color = optionColorConfig[record.optionIndex % optionColorConfig.length];
+                            const optionName = proposal.options[record.optionIndex] || `选项${record.optionIndex + 1}`;
+                            const voteTime = new Date(record.timestamp * 1000).toLocaleString();
+                            return (
+                              <div 
+                                key={`voted-${idx}`} 
+                                className="bg-zinc-800/50 rounded-lg p-3 flex items-center justify-between gap-3"
+                              >
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-sm text-zinc-300 font-mono break-all">
+                                    {record.voter}
+                                  </p>
+                                  <p className="text-xs text-zinc-500 mt-1">
+                                    投票时间: {voteTime}
+                                  </p>
+                                </div>
+                                <div className={`shrink-0 px-3 py-1.5 rounded-lg bg-gradient-to-r ${color.gradient} text-white text-sm font-medium`}>
+                                  {optionName}
+                                </div>
+                              </div>
+                            );
+                          })
+                        ) : null}
+                      </>
+                    )}
+                    {/* 未投票的人 */}
                     {notVotedAddresses.length > 0 && notVotedAddresses.map((addr, idx) => (
                       <div
                         key={`notvoted-${idx}`}
@@ -990,7 +1098,7 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                         </div>
                       </div>
                     ))}
-                    {voteRecords.length === 0 && notVotedAddresses.length === 0 && !loadingRecords && (
+                    {voteRecords.length === 0 && rankedVoteRecords.length === 0 && notVotedAddresses.length === 0 && !loadingRecords && (
                       <div className="py-8 text-center">
                         <p className="text-zinc-500">暂无投票记录</p>
                       </div>
@@ -998,22 +1106,45 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                   </div>
                   
                   {/* 统计摘要 */}
-                  {voteRecords.length > 0 && (
-                    <div className="pt-3 border-t border-zinc-800 mt-3">
-                      <p className="text-xs text-zinc-500 text-center">
-                        各选项统计：
-                        {proposal.options.map((opt, idx) => {
-                          const count = voteRecords.filter(r => r.optionIndex === idx).length;
-                          const color = optionColorConfig[idx % optionColorConfig.length];
-                          return (
-                            <span key={idx} className={`ml-2 ${color.text}`}>
-                              {opt}: {count}票
-                            </span>
-                          );
-                        })}
-                        <span className="ml-2 text-zinc-400">未投票: {notVotedAddresses.length}人</span>
-                      </p>
-                    </div>
+                  {proposal.rule === VotingRule.RankedChoice ? (
+                    rankedVoteRecords.length > 0 && (
+                      <div className="pt-3 border-t border-zinc-800 mt-3">
+                        <p className="text-xs text-zinc-500 text-center">
+                          首选分布：
+                          {proposal.options.map((opt, idx) => {
+                            const count = rankedVoteRecords.filter(r => r.ranking[0] === idx).length;
+                            const color = optionColorConfig[idx % optionColorConfig.length];
+                            return (
+                              <span key={idx} className={`ml-2 ${color.text}`}>
+                                {opt}: {count}票
+                              </span>
+                            );
+                          })}
+                          <span className="ml-2 text-zinc-400">未投票: {notVotedAddresses.length}人</span>
+                        </p>
+                        <p className="text-xs text-zinc-600 text-center mt-1">
+                          最终结果由即时决选（IRV）算法逐轮淘汰计算
+                        </p>
+                      </div>
+                    )
+                  ) : (
+                    voteRecords.length > 0 && (
+                      <div className="pt-3 border-t border-zinc-800 mt-3">
+                        <p className="text-xs text-zinc-500 text-center">
+                          各选项统计：
+                          {proposal.options.map((opt, idx) => {
+                            const count = voteRecords.filter(r => r.optionIndex === idx).length;
+                            const color = optionColorConfig[idx % optionColorConfig.length];
+                            return (
+                              <span key={idx} className={`ml-2 ${color.text}`}>
+                                {opt}: {count}票
+                              </span>
+                            );
+                          })}
+                          <span className="ml-2 text-zinc-400">未投票: {notVotedAddresses.length}人</span>
+                        </p>
+                      </div>
+                    )
                   )}
                 </DialogContent>
               </Dialog>
@@ -1148,7 +1279,10 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                   </DialogHeader>
                   <VoteDialog 
                     options={proposal.options}
+                    votingRule={proposal.rule}
                     onVote={(optionIndex) => onVote(proposal.id, optionIndex)}
+                    onQuadraticVote={(optionIndexes, voteAmounts) => onQuadraticVote(proposal.id, optionIndexes, voteAmounts)}
+                    onRankedVote={(rankedOptions) => onRankedVote(proposal.id, rankedOptions)}
                   />
                 </DialogContent>
               </Dialog>
@@ -1232,13 +1366,74 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
 
 interface VoteDialogProps {
   options: string[];
+  votingRule?: number;
   onVote: (optionIndex: number) => void;
+  onQuadraticVote?: (optionIndexes: number[], voteAmounts: number[]) => void;
+  onRankedVote?: (rankedOptions: number[]) => void;
 }
 
-function VoteDialog({ options, onVote }: VoteDialogProps) {
+function VoteDialog({ options, votingRule, onVote, onQuadraticVote, onRankedVote }: VoteDialogProps) {
   const [selected, setSelected] = useState<number | null>(null);
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // 二次方投票：每个选项的投票数量
+  const [qvAmounts, setQvAmounts] = useState<number[]>(() => new Array(options.length).fill(0));
+  // 排序选择：排名数组（ranking[i] = 选项i的排名，0表示未排序）
+  const [ranking, setRanking] = useState<number[]>(() => new Array(options.length).fill(0));
+
+  const isQuadratic = votingRule === VotingRule.Quadratic;
+  const isRanked = votingRule === VotingRule.RankedChoice;
+  const TOTAL_CREDITS = 100;
+
+  // 二次方投票积分计算
+  const qvCosts = qvAmounts.map(v => v * v);
+  const qvTotalCost = qvCosts.reduce((a, b) => a + b, 0);
+  const qvRemaining = TOTAL_CREDITS - qvTotalCost;
+  const qvTotalVotes = qvAmounts.reduce((a, b) => a + b, 0);
+  const qvOverBudget = qvTotalCost > TOTAL_CREDITS;
+
+  const adjustQvAmount = (index: number, delta: number) => {
+    setQvAmounts(prev => {
+      const next = [...prev];
+      const newVal = Math.max(0, Math.min(10, next[index] + delta));
+      next[index] = newVal;
+      return next;
+    });
+  };
+
+  // 排序选择：已排名数量和辅助函数
+  const rankedCount = ranking.filter(r => r > 0).length;
+  const allRanked = rankedCount === options.length;
+
+  const toggleRank = (index: number) => {
+    setRanking(prev => {
+      const next = [...prev];
+      if (next[index] > 0) {
+        // 取消排名：移除并调整后续排名
+        const removedRank = next[index];
+        next[index] = 0;
+        for (let i = 0; i < next.length; i++) {
+          if (next[i] > removedRank) {
+            next[i]--;
+          }
+        }
+      } else {
+        // 分配下一个排名
+        const nextRank = prev.filter(r => r > 0).length + 1;
+        next[index] = nextRank;
+      }
+      return next;
+    });
+  };
+
+  // 获取排序后的选项索引数组（按排名顺序）
+  const getRankedOptions = (): number[] => {
+    return ranking
+      .map((rank, idx) => ({ rank, idx }))
+      .filter(item => item.rank > 0)
+      .sort((a, b) => a.rank - b.rank)
+      .map(item => item.idx);
+  };
 
   // 支持更多选项的颜色和图标
   const optionStyles = [
@@ -1253,27 +1448,212 @@ function VoteDialog({ options, onVote }: VoteDialogProps) {
   ];
 
   const handleSubmitVote = async () => {
-    if (selected === null) return;
     setIsSubmitting(true);
     setStep(2);
     
     // 模拟生成证明的过程
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // 调用投票回调
-    onVote(selected);
+    if (isRanked && onRankedVote) {
+      onRankedVote(getRankedOptions());
+    } else if (isQuadratic && onQuadraticVote) {
+      // 收集 voteAmount > 0 的选项
+      const indexes: number[] = [];
+      const amounts: number[] = [];
+      qvAmounts.forEach((amt, idx) => {
+        if (amt > 0) {
+          indexes.push(idx);
+          amounts.push(amt);
+        }
+      });
+      onQuadraticVote(indexes, amounts);
+    } else {
+      if (selected === null) return;
+      onVote(selected);
+    }
     setStep(3);
   };
+
+  // 提交按钮是否可用
+  const canSubmit = isRanked
+    ? allRanked && !isSubmitting
+    : isQuadratic
+      ? qvTotalVotes > 0 && !qvOverBudget && !isSubmitting
+      : selected !== null && !isSubmitting;
 
   return (
     <div className="space-y-6 py-4">
       {step === 1 && (
         <>
+          {/* 二次方投票：积分状态栏 */}
+          {isQuadratic && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-300 font-medium flex items-center gap-1.5">
+                  <Coins className="w-4 h-4 text-amber-400" />
+                  积分分配
+                </span>
+                <span className={`font-mono font-bold ${qvOverBudget ? "text-rose-400" : qvRemaining < 20 ? "text-amber-400" : "text-emerald-400"}`}>
+                  {qvTotalCost} / {TOTAL_CREDITS} 已用
+                </span>
+              </div>
+              <div className="w-full h-3 rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    qvOverBudget
+                      ? "bg-gradient-to-r from-rose-500 to-red-500"
+                      : qvRemaining < 20
+                        ? "bg-gradient-to-r from-amber-500 to-orange-500"
+                        : "bg-gradient-to-r from-emerald-500 to-cyan-500"
+                  }`}
+                  style={{ width: `${Math.min(100, (qvTotalCost / TOTAL_CREDITS) * 100)}%` }}
+                />
+              </div>
+              {qvOverBudget && (
+                <p className="text-xs text-rose-400 font-medium">积分不足！请减少投票数量</p>
+              )}
+              <p className="text-xs text-zinc-500">
+                投 N 票的成本 = N\u00B2 积分。例：3 票 = 9 积分，10 票 = 100 积分
+              </p>
+            </div>
+          )}
+
+          {/* 排序选择：排名进度 */}
+          {isRanked && (
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-300 font-medium flex items-center gap-1.5">
+                  <Hash className="w-4 h-4 text-violet-400" />
+                  偏好排序
+                </span>
+                <span className={`font-mono font-bold ${allRanked ? "text-emerald-400" : "text-zinc-400"}`}>
+                  {rankedCount} / {options.length} 已排序
+                </span>
+              </div>
+              <div className="w-full h-3 rounded-full bg-zinc-800 overflow-hidden">
+                <div
+                  className={`h-full rounded-full transition-all duration-300 ${
+                    allRanked
+                      ? "bg-gradient-to-r from-emerald-500 to-cyan-500"
+                      : "bg-gradient-to-r from-violet-500 to-fuchsia-500"
+                  }`}
+                  style={{ width: `${(rankedCount / options.length) * 100}%` }}
+                />
+              </div>
+              <p className="text-xs text-zinc-500">
+                点击选项按偏好排序，第1名为最优先。再次点击可取消排名。
+              </p>
+            </div>
+          )}
+
           <div className={`space-y-3 ${options.length > 4 ? 'max-h-80 overflow-y-auto pr-2' : ''}`}>
             {options.map((option, index) => {
               const style = optionStyles[index % optionStyles.length];
               const isSelected = selected === index;
+              const votes = qvAmounts[index];
+              const cost = qvCosts[index];
+              const hasVotes = votes > 0;
               
+              if (isQuadratic) {
+                // 二次方投票 UI：每个选项有 +/- 控件
+                return (
+                  <div
+                    key={index}
+                    className={`p-4 rounded-xl border-2 transition-all ${
+                      hasVotes
+                        ? "border-opacity-100"
+                        : "border-zinc-800"
+                    }`}
+                    style={{
+                      borderColor: hasVotes ? style.hex : undefined,
+                      backgroundColor: hasVotes ? `${style.hex}0d` : undefined,
+                    }}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold shrink-0"
+                        style={{ backgroundColor: hasVotes ? style.hex : "#27272a" }}
+                      >
+                        {style.icon}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-zinc-100 truncate">{option}</p>
+                        {hasVotes ? (
+                          <p className="text-xs mt-0.5" style={{ color: style.hex }}>
+                            {votes} 票 = {cost} 积分
+                          </p>
+                        ) : (
+                          <p className="text-xs text-zinc-500 mt-0.5">未分配</p>
+                        )}
+                      </div>
+                      {/* +/- 控件 */}
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          onClick={() => adjustQvAmount(index, -1)}
+                          disabled={votes <= 0}
+                          className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:bg-zinc-800 transition-colors flex items-center justify-center font-bold text-lg"
+                        >
+                          -
+                        </button>
+                        <span className="w-8 text-center font-mono font-bold text-zinc-100 text-lg">
+                          {votes}
+                        </span>
+                        <button
+                          onClick={() => adjustQvAmount(index, 1)}
+                          disabled={votes >= 10}
+                          className="w-8 h-8 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white disabled:opacity-30 disabled:hover:bg-zinc-800 transition-colors flex items-center justify-center font-bold text-lg"
+                        >
+                          +
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              }
+
+              if (isRanked) {
+                // 排序选择 UI：点击分配排名
+                const rank = ranking[index];
+                const isRankedOption = rank > 0;
+                return (
+                  <button
+                    key={index}
+                    onClick={() => toggleRank(index)}
+                    className={`w-full p-4 rounded-xl border-2 transition-all text-left ${
+                      isRankedOption
+                        ? "border-opacity-100"
+                        : "border-zinc-800 hover:border-zinc-700"
+                    }`}
+                    style={{
+                      borderColor: isRankedOption ? style.hex : undefined,
+                      backgroundColor: isRankedOption ? `${style.hex}0d` : undefined,
+                    }}
+                  >
+                    <div className="flex items-center gap-3">
+                      <div
+                        className="w-10 h-10 rounded-full flex items-center justify-center font-bold shrink-0 text-lg"
+                        style={{
+                          backgroundColor: isRankedOption ? style.hex : "#27272a",
+                          color: isRankedOption ? "white" : "#71717a",
+                        }}
+                      >
+                        {isRankedOption ? rank : "?"}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="font-semibold text-zinc-100 truncate">{option}</p>
+                        <p className="text-xs mt-0.5" style={{ color: isRankedOption ? style.hex : "#71717a" }}>
+                          {isRankedOption ? `第 ${rank} 选择` : "点击排序"}
+                        </p>
+                      </div>
+                      {isRankedOption && (
+                        <span className="text-xs text-zinc-500 shrink-0">点击取消</span>
+                      )}
+                    </div>
+                  </button>
+                );
+              }
+
+              // 普通投票 UI：单选
               return (
                 <button
                   key={index}
@@ -1314,6 +1694,49 @@ function VoteDialog({ options, onVote }: VoteDialogProps) {
             })}
           </div>
 
+          {/* 二次方投票：积分分配汇总 */}
+          {isQuadratic && qvTotalVotes > 0 && (
+            <div className="bg-zinc-800/50 rounded-lg p-3 space-y-1">
+              <p className="text-xs font-medium text-zinc-300">分配汇总</p>
+              {qvAmounts.map((amt, idx) => amt > 0 && (
+                <div key={idx} className="flex justify-between text-xs">
+                  <span className="text-zinc-400">{options[idx]}</span>
+                  <span className="text-zinc-300 font-mono">{amt} 票 ({amt * amt} 积分)</span>
+                </div>
+              ))}
+              <div className="flex justify-between text-xs pt-1 border-t border-zinc-700 mt-1">
+                <span className="text-zinc-300 font-medium">剩余积分</span>
+                <span className={`font-mono font-bold ${qvOverBudget ? "text-rose-400" : "text-emerald-400"}`}>
+                  {qvRemaining}
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* 排序选择：排名顺序汇总 */}
+          {isRanked && rankedCount > 0 && (
+            <div className="bg-zinc-800/50 rounded-lg p-3 space-y-1">
+              <p className="text-xs font-medium text-zinc-300">偏好排序</p>
+              {getRankedOptions().map((optIdx, rank) => {
+                const style = optionStyles[optIdx % optionStyles.length];
+                return (
+                  <div key={optIdx} className="flex items-center gap-2 text-xs">
+                    <span className="w-5 h-5 rounded-full flex items-center justify-center text-white font-bold text-[10px] shrink-0"
+                      style={{ backgroundColor: style.hex }}>
+                      {rank + 1}
+                    </span>
+                    <span className="text-zinc-300 truncate">{options[optIdx]}</span>
+                  </div>
+                );
+              })}
+              {!allRanked && (
+                <p className="text-xs text-zinc-500 pt-1 border-t border-zinc-700 mt-1">
+                  还需排序 {options.length - rankedCount} 个选项
+                </p>
+              )}
+            </div>
+          )}
+
           <div className="bg-zinc-800/50 rounded-lg p-3 flex items-start gap-2">
             <svg
               className="w-5 h-5 text-violet-400 shrink-0 mt-0.5"
@@ -1329,20 +1752,44 @@ function VoteDialog({ options, onVote }: VoteDialogProps) {
               />
             </svg>
             <div className="text-xs text-zinc-400">
-              <p className="font-medium text-zinc-300">隐私保护投票</p>
-              <p>
-                您的投票将使用 Semaphore 零知识证明匿名提交，同时使用 Paillier
-                同态加密保护投票内容。
-              </p>
+              {isRanked ? (
+                <>
+                  <p className="font-medium text-zinc-300">排序选择投票</p>
+                  <p>
+                    请按偏好排序所有选项。计票时逐轮淘汰最低票选项，
+                    将其选票转移给下一偏好，直到某选项获得过半支持。
+                  </p>
+                </>
+              ) : isQuadratic ? (
+                <>
+                  <p className="font-medium text-zinc-300">二次方投票</p>
+                  <p>
+                    您拥有 {TOTAL_CREDITS} 积分，可分配给多个选项。投 N 票的成本为 N\u00B2 积分，
+                    这使得集中投票变得更加昂贵，鼓励更均衡的表达偏好。
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-medium text-zinc-300">隐私保护投票</p>
+                  <p>
+                    您的投票将使用 Semaphore 零知识证明匿名提交，同时使用 Paillier
+                    同态加密保护投票内容。
+                  </p>
+                </>
+              )}
             </div>
           </div>
 
           <Button
             onClick={handleSubmitVote}
-            disabled={selected === null || isSubmitting}
+            disabled={!canSubmit}
             className="w-full bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
           >
-            确认投票
+            {isRanked
+              ? `确认排序 (${rankedCount}/${options.length})`
+              : isQuadratic
+                ? `确认投票 (${qvTotalVotes} 票 / ${qvTotalCost} 积分)`
+                : "确认投票"}
           </Button>
         </>
       )}
@@ -1836,9 +2283,9 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                       <div className="grid grid-cols-2 gap-2">
                         {[
                           { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
-                          { value: VotingRule.Weighted, label: "加权投票", desc: "按Token数量加权" },
-                          { value: VotingRule.Quadratic, label: "二次方投票", desc: "成本=票数²" },
-                          { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序" },
+                          { value: VotingRule.Weighted, label: "加权投票", desc: "为不同选民设置不同权重" },
+                          { value: VotingRule.Quadratic, label: "二次方投票", desc: "100积分自由分配，投票越集中成本越高" },
+                          { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序选项，逐轮淘汰最低票" },
                         ].map((r) => (
                           <button
                             key={r.value}
@@ -2516,6 +2963,40 @@ function App() {
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  // 处理二次方投票 - 调用真实合约
+  const handleQuadraticVote = useCallback(async (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => {
+    console.log("handleQuadraticVote: proposalId:", proposalId, "options:", optionIndexes, "amounts:", voteAmounts);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+
+    const success = await votingFactory.castQuadraticVote(proposalId, optionIndexes, voteAmounts);
+    if (success) {
+      addToast("success", "二次方投票成功", "您的积分分配已提交");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "二次方投票失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 处理排序选择投票 - 调用真实合约
+  const handleRankedVote = useCallback(async (proposalId: number, rankedOptions: number[]) => {
+    console.log("handleRankedVote: proposalId:", proposalId, "ranking:", rankedOptions);
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+
+    const success = await votingFactory.castRankedVote(proposalId, rankedOptions);
+    if (success) {
+      addToast("success", "排序选择投票成功", "您的偏好排序已提交");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "排序选择投票失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
   // 开始注册阶段
   const handleStartRegistration = useCallback(async (proposalId: number) => {
     console.log("handleStartRegistration: 点击开始注册, proposalId:", proposalId);
@@ -2602,6 +3083,22 @@ function App() {
       records.push({
         voter: result.voters[i],
         optionIndex: result.optionIndexes[i],
+        timestamp: result.timestamps[i],
+      });
+    }
+    return records;
+  }, [votingFactory]);
+
+  // 加载排序选择投票的完整排名记录
+  const handleLoadRankedVoteRecords = useCallback(async (proposalId: number): Promise<RankedVoteRecord[] | null> => {
+    const result = await votingFactory.getRankedVoteRecords(proposalId);
+    if (!result) return null;
+
+    const records: RankedVoteRecord[] = [];
+    for (let i = 0; i < result.voters.length; i++) {
+      records.push({
+        voter: result.voters[i],
+        ranking: result.rankings[i],
         timestamp: result.timestamps[i],
       });
     }
@@ -2782,11 +3279,14 @@ function App() {
                     onRegister={handleRegister}
                     onRegisterWeighted={handleRegisterWeighted}
                     onVote={handleVote}
+                    onQuadraticVote={handleQuadraticVote}
+                    onRankedVote={handleRankedVote}
                     onStartRegistration={handleStartRegistration}
                     onStartVoting={handleStartVoting}
                     onStartTallying={handleStartTallying}
                     onRevealResult={handleRevealResult}
                     onLoadVoteRecords={handleLoadVoteRecords}
+                    onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
                   />
                 ))}
@@ -2827,11 +3327,14 @@ function App() {
                         onRegister={handleRegister}
                         onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
+                        onQuadraticVote={handleQuadraticVote}
+                        onRankedVote={handleRankedVote}
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
                         onLoadVoteRecords={handleLoadVoteRecords}
+                        onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
                       />
                     ))
@@ -2871,11 +3374,14 @@ function App() {
                         onRegister={handleRegister}
                         onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
+                        onQuadraticVote={handleQuadraticVote}
+                        onRankedVote={handleRankedVote}
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
                         onLoadVoteRecords={handleLoadVoteRecords}
+                        onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
                       />
                     ))
@@ -3000,11 +3506,14 @@ function App() {
                             onRegister={handleRegister}
                             onRegisterWeighted={handleRegisterWeighted}
                             onVote={handleVote}
+                            onQuadraticVote={handleQuadraticVote}
+                            onRankedVote={handleRankedVote}
                             onStartRegistration={handleStartRegistration}
                             onStartVoting={handleStartVoting}
                             onStartTallying={handleStartTallying}
                             onRevealResult={handleRevealResult}
                             onLoadVoteRecords={handleLoadVoteRecords}
+                            onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                             onLoadRegisteredVoters={handleLoadRegisteredVoters}
                           />
                         ))
