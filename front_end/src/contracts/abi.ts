@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-10T14:52:15.688Z
+ * 最后更新: 2026-02-10T15:08:33.485Z
  */
 
 export const VotingCoreABI = [
@@ -90,7 +90,7 @@ export const StatisticsCenterABI = [
 ] as const;
 
 /**
- * 投票工厂合约 ABI
+ * 投票工厂合约 ABI（写入 + 最小查询）
  */
 export const VotingFactoryABI = [
   // 事件
@@ -118,8 +118,16 @@ export const VotingFactoryABI = [
   "function startTallying(uint256 votingId)",
   "function revealResult(uint256 votingId)",
   
-  // 查询函数
+  // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
+  "function getEffectiveState(uint256 votingId) view returns (uint8)",
+  "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
+] as const;
+
+/**
+ * 查询中心合约 ABI（所有只读查询）
+ */
+export const QueryCenterABI = [
   "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance))",
   "function getAllVotingIds() view returns (uint256[])",
   "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
@@ -198,6 +206,7 @@ export const CONTRACT_ADDRESSES = {
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
     statisticsCenter: "0x0000000000000000000000000000000000000000",
+    queryCenter: "0x0000000000000000000000000000000000000000",
   },
   // 本地开发网络 - 自动更新
   localhost: {
@@ -206,6 +215,7 @@ export const CONTRACT_ADDRESSES = {
     votingCenter: "0xCf7Ed3AccA5a467e9e704C703E8D87F634fB0Fc9",
     revealCenter: "0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512",
     statisticsCenter: "0x9fE46736679d2D9a65F0992F2272dE9f3c7fa6e0",
+    queryCenter: "0x0165878A594ca255338adfa4d48449f69242Eb8F",
   },
 } as const;
 

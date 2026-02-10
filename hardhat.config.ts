@@ -8,10 +8,9 @@ export default defineConfig({
       default: {
         version: "0.8.28",
         settings: {
-          viaIR: true,
           optimizer: {
             enabled: true,
-            runs: 10,
+            runs: 200,
           },
         },
       },
@@ -30,7 +29,6 @@ export default defineConfig({
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
-      allowUnlimitedContractSize: true,
     },
     hardhatOp: {
       type: "edr-simulated",

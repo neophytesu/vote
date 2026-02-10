@@ -46,6 +46,7 @@ async function main() {
     votingCenter: deployedAddresses["VotingFactoryModule#VotingCenter"] || "0x0000000000000000000000000000000000000000",
     revealCenter: deployedAddresses["VotingFactoryModule#RevealCenter"] || "0x0000000000000000000000000000000000000000",
     statisticsCenter: deployedAddresses["VotingFactoryModule#StatisticsCenter"] || "0x0000000000000000000000000000000000000000",
+    queryCenter: deployedAddresses["VotingFactoryModule#QueryCenter"] || "0x0000000000000000000000000000000000000000",
   };
 
   // 生成前端配置文件内容
@@ -141,7 +142,7 @@ export const StatisticsCenterABI = [
 ] as const;
 
 /**
- * 投票工厂合约 ABI
+ * 投票工厂合约 ABI（写入 + 最小查询）
  */
 export const VotingFactoryABI = [
   // 事件
@@ -169,8 +170,16 @@ export const VotingFactoryABI = [
   "function startTallying(uint256 votingId)",
   "function revealResult(uint256 votingId)",
   
-  // 查询函数
+  // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
+  "function getEffectiveState(uint256 votingId) view returns (uint8)",
+  "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
+] as const;
+
+/**
+ * 查询中心合约 ABI（所有只读查询）
+ */
+export const QueryCenterABI = [
   "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance))",
   "function getAllVotingIds() view returns (uint256[])",
   "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
@@ -249,6 +258,7 @@ export const CONTRACT_ADDRESSES = {
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
     statisticsCenter: "0x0000000000000000000000000000000000000000",
+    queryCenter: "0x0000000000000000000000000000000000000000",
   },
   // 本地开发网络 - 自动更新
   localhost: {
@@ -257,6 +267,7 @@ export const CONTRACT_ADDRESSES = {
     votingCenter: "${addresses.votingCenter}",
     revealCenter: "${addresses.revealCenter}",
     statisticsCenter: "${addresses.statisticsCenter}",
+    queryCenter: "${addresses.queryCenter}",
   },
 } as const;
 
@@ -284,6 +295,7 @@ export function getContractAddresses(chainId: number) {
   console.log(`   文件: ${frontendAbiPath}`);
   console.log("\n📍 新地址:");
   console.log(`   VotingFactory:      ${addresses.votingFactory}`);
+  console.log(`   QueryCenter:        ${addresses.queryCenter}`);
   console.log(`   RegistrationCenter: ${addresses.registrationCenter}`);
   console.log(`   VotingCenter:       ${addresses.votingCenter}`);
   console.log(`   RevealCenter:       ${addresses.revealCenter}`);

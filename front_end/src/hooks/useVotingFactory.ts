@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { BrowserProvider, Contract } from "ethers";
 import {
   VotingFactoryABI,
+  QueryCenterABI,
   RegistrationCenterABI,
   VotingState,
   VotingRule,
@@ -120,7 +121,7 @@ export function useVotingFactory(chainId: number | null) {
     return contract;
   }, [chainId]);
 
-  // 获取只读合约实例
+  // 获取只读合约实例（VotingFactory - 仅用于 votingCount 等最小查询）
   const getReadOnlyContract = useCallback(async () => {
     if (!window.ethereum || !chainId) {
       throw new Error("请先连接钱包");
@@ -133,6 +134,21 @@ export function useVotingFactory(chainId: number | null) {
 
     const provider = new BrowserProvider(window.ethereum);
     return new Contract(addresses.votingFactory, VotingFactoryABI, provider);
+  }, [chainId]);
+
+  // 获取查询中心合约实例（所有只读查询走 QueryCenter）
+  const getQueryContract = useCallback(async () => {
+    if (!window.ethereum || !chainId) {
+      throw new Error("请先连接钱包");
+    }
+
+    const addresses = getContractAddresses(chainId);
+    if (addresses.queryCenter === "0x0000000000000000000000000000000000000000") {
+      throw new Error("查询合约尚未部署到当前网络");
+    }
+
+    const provider = new BrowserProvider(window.ethereum);
+    return new Contract(addresses.queryCenter, QueryCenterABI, provider);
   }, [chainId]);
 
   // 解析合约返回的投票数据
@@ -454,7 +470,7 @@ export function useVotingFactory(chainId: number | null) {
   const getPendingVoters = useCallback(
     async (votingId: number): Promise<string[]> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const list = await contract.getPendingVoters(votingId);
         return Array.isArray(list) ? list.map((a: string) => String(a)) : [];
       } catch (err) {
@@ -462,7 +478,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -474,7 +490,7 @@ export function useVotingFactory(chainId: number | null) {
       address: string
     ): Promise<{ registered: boolean; pending: boolean; voted: boolean }> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [registered, pending, voted] = await contract.getUserFullStatus(
           votingId,
           address
@@ -484,7 +500,7 @@ export function useVotingFactory(chainId: number | null) {
         return { registered: false, pending: false, voted: false };
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -677,7 +693,7 @@ export function useVotingFactory(chainId: number | null) {
   const getVoting = useCallback(
     async (votingId: number): Promise<VotingDetails | null> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const data = await contract.getVoting(votingId);
         return parseVotingDetails(data);
       } catch (err) {
@@ -685,7 +701,7 @@ export function useVotingFactory(chainId: number | null) {
         return null;
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -695,12 +711,13 @@ export function useVotingFactory(chainId: number | null) {
     setState((prev) => ({ ...prev, isLoading: true, error: null }));
 
     try {
-      const contract = await getReadOnlyContract();
-      const count = await contract.votingCount();
+      const factoryContract = await getReadOnlyContract();
+      const queryContract = await getQueryContract();
+      const count = await factoryContract.votingCount();
       const votings: VotingDetails[] = [];
 
       for (let i = 1; i <= Number(count); i++) {
-        const data = await contract.getVoting(i);
+        const data = await queryContract.getVoting(i);
         votings.push(parseVotingDetails(data));
       }
 
@@ -715,7 +732,7 @@ export function useVotingFactory(chainId: number | null) {
       }));
       return [];
     }
-  }, [getReadOnlyContract]);
+  }, [getReadOnlyContract, getQueryContract]);
 
   /**
    * 获取最近的投票
@@ -723,7 +740,7 @@ export function useVotingFactory(chainId: number | null) {
   const getRecentVotings = useCallback(
     async (count: number): Promise<VotingDetails[]> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const data = await contract.getRecentVotings(count);
         return data.map(parseVotingDetails);
       } catch (err) {
@@ -731,7 +748,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -740,7 +757,7 @@ export function useVotingFactory(chainId: number | null) {
   const getMyCreatedVotings = useCallback(
     async (address: string): Promise<VotingDetails[]> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const ids = await contract.getVotingsByCreator(address);
         const votings: VotingDetails[] = [];
 
@@ -755,7 +772,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -764,7 +781,7 @@ export function useVotingFactory(chainId: number | null) {
   const getMyParticipatedVotings = useCallback(
     async (address: string): Promise<VotingDetails[]> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const ids = await contract.getVotingsByVoter(address);
         const votings: VotingDetails[] = [];
 
@@ -779,7 +796,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -791,7 +808,7 @@ export function useVotingFactory(chainId: number | null) {
       address: string
     ): Promise<{ registered: boolean; voted: boolean }> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [registered, voted] = await contract.getUserVotingStatus(
           votingId,
           address
@@ -801,7 +818,7 @@ export function useVotingFactory(chainId: number | null) {
         return { registered: false, voted: false };
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -816,7 +833,7 @@ export function useVotingFactory(chainId: number | null) {
       totalVotes: number;
     } | null> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [voteCounts, winningOption, totalVotes] =
           await contract.getVotingResult(votingId);
         return {
@@ -828,7 +845,7 @@ export function useVotingFactory(chainId: number | null) {
         return null;
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -873,7 +890,7 @@ export function useVotingFactory(chainId: number | null) {
       timestamps: number[];
     } | null> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [voters, optionIndexes, timestamps] =
           await contract.getVoteRecords(votingId);
         return {
@@ -885,7 +902,7 @@ export function useVotingFactory(chainId: number | null) {
         return null;
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -900,7 +917,7 @@ export function useVotingFactory(chainId: number | null) {
       timestamps: number[];
     } | null> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [voters, rankings, timestamps] =
           await contract.getRankedVoteRecords(votingId);
         return {
@@ -914,7 +931,7 @@ export function useVotingFactory(chainId: number | null) {
         return null;
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   /**
@@ -930,7 +947,7 @@ export function useVotingFactory(chainId: number | null) {
       voted: boolean;
     } | null> => {
       try {
-        const contract = await getReadOnlyContract();
+        const contract = await getQueryContract();
         const [optionIndex, timestamp, voted] =
           await contract.getVoterChoice(votingId, voter);
         return {
@@ -942,7 +959,7 @@ export function useVotingFactory(chainId: number | null) {
         return null;
       }
     },
-    [getReadOnlyContract]
+    [getQueryContract]
   );
 
   // 清除错误
