@@ -51,6 +51,9 @@ contract VotingFactory is IVotingTypes {
     /// @notice 注册拒绝事件
     event RegistrationRejected(uint256 indexed votingId, address indexed voter);
 
+    /// @notice 投票取消事件
+    event VotingCancelled(uint256 indexed votingId, address indexed cancelledBy);
+
     /// @notice 投票基本信息结构（不包含由中心合约管理的数据）
     struct VotingInfo {
         uint256 id;
@@ -74,6 +77,8 @@ contract VotingFactory is IVotingTypes {
         RegistrationRule registrationRule;  // 注册规则
         address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
         uint256 tokenMinBalance;       // 最低持有数量（NFTHolder 默认1，TokenHolder 由创建者设定）
+        bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
+        bool allowExtension;          // 是否允许动态延长注册期/投票期
     }
 
     /// @notice 投票详情结构（包含聚合数据）
@@ -103,6 +108,8 @@ contract VotingFactory is IVotingTypes {
         RegistrationRule registrationRule;  // 注册规则
         address tokenContractAddress;  // NFT/Token 合约地址
         uint256 tokenMinBalance;       // 最低持有数量
+        bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
+        bool allowExtension;           // 是否允许动态延长注册期/投票期
     }
 
     /// @notice 创建投票参数结构
@@ -127,6 +134,8 @@ contract VotingFactory is IVotingTypes {
         RegistrationRule registrationRule;  // 注册规则
         address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
         uint256 tokenMinBalance;       // 最低持有数量
+        bool useBlockNumber;            // 时间控制：true=用区块高度，false=用时间戳
+        bool allowExtension;            // 是否允许动态延长注册期/投票期
     }
 
     // ==================== 模块化中心合约 ====================
@@ -189,6 +198,11 @@ contract VotingFactory is IVotingTypes {
     {
         VotingInfo storage voting = votings[votingId];
         
+        // 取消状态：无论手动/自动均直接返回
+        if (voting.state == VotingState.Cancelled) {
+            return VotingState.Cancelled;
+        }
+
         // 手动模式：直接返回存储的状态
         if (!voting.autoAdvance) {
             return voting.state;
@@ -199,22 +213,18 @@ contract VotingFactory is IVotingTypes {
             return VotingState.Finalized;
         }
 
-        // 自动推进模式：根据时间计算状态
+        // 自动推进模式：根据时间/区块计算状态
         // 注意：Tallying 状态需要实际调用来揭示结果，所以在投票结束后返回 Tallying
-        if (block.timestamp > voting.votingEnd) {
-            // 如果结果已经揭示（存储状态为 Finalized），返回 Finalized
-            // 否则返回 Tallying，等待调用 revealResult
+        uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+        if (nowOrBlock > voting.votingEnd) {
             return VotingState.Tallying;
         }
-        
-        if (block.timestamp >= voting.votingStart) {
+        if (nowOrBlock >= voting.votingStart) {
             return VotingState.Voting;
         }
-        
-        if (block.timestamp >= voting.registrationStart) {
+        if (nowOrBlock >= voting.registrationStart) {
             return VotingState.Registration;
         }
-        
         return VotingState.Created;
     }
 
@@ -226,8 +236,8 @@ contract VotingFactory is IVotingTypes {
     function canRegister(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
         VotingInfo storage voting = votings[votingId];
-        return effectiveState == VotingState.Registration && 
-               block.timestamp <= voting.registrationEnd;
+        uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+        return effectiveState == VotingState.Registration && nowOrBlock <= voting.registrationEnd;
     }
 
     /**
@@ -238,8 +248,8 @@ contract VotingFactory is IVotingTypes {
     function canVote(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
         VotingInfo storage voting = votings[votingId];
-        return effectiveState == VotingState.Voting && 
-               block.timestamp <= voting.votingEnd;
+        uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+        return effectiveState == VotingState.Voting && nowOrBlock <= voting.votingEnd;
     }
 
     /**
@@ -305,6 +315,8 @@ contract VotingFactory is IVotingTypes {
         voting.autoAdvance = params.autoAdvance;
         voting.visibilityBitmap = params.visibilityBitmap;
         voting.registrationRule = params.registrationRule;
+        voting.useBlockNumber = params.useBlockNumber;
+        voting.allowExtension = params.allowExtension;
 
         // NFT/Token 持有者模式：存储合约地址和最低持有量
         if (params.registrationRule == RegistrationRule.NFTHolder || params.registrationRule == RegistrationRule.TokenHolder) {
@@ -383,10 +395,9 @@ contract VotingFactory is IVotingTypes {
         VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
-            // 自动模式：需要满足时间条件
-            require(block.timestamp >= voting.registrationStart, "Too early");
+            uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+            require(nowOrBlock >= voting.registrationStart, "Too early");
         } else {
-            // 手动模式：只需创建者权限，无时间限制
             require(
                 msg.sender == voting.creator || msg.sender == owner,
                 "Not authorized"
@@ -395,6 +406,70 @@ contract VotingFactory is IVotingTypes {
 
         voting.state = VotingState.Registration;
         emit StateChanged(votingId, VotingState.Registration);
+    }
+
+    /**
+     * @notice 取消投票
+     * @param votingId 投票ID
+     * @dev 仅创建者或 owner 可调用；仅在 Created / Registration / Voting 状态下可取消
+     */
+    function cancelVoting(uint256 votingId)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            msg.sender == voting.creator || msg.sender == owner,
+            "Not authorized"
+        );
+        require(
+            voting.state == VotingState.Created ||
+            voting.state == VotingState.Registration ||
+            voting.state == VotingState.Voting,
+            "Cannot cancel in this state"
+        );
+
+        voting.state = VotingState.Cancelled;
+        emit VotingCancelled(votingId, msg.sender);
+        emit StateChanged(votingId, VotingState.Cancelled);
+    }
+
+    /**
+     * @notice 延长注册截止时间
+     * @param votingId 投票ID
+     * @param newEnd 新的注册截止时间（时间戳或区块号，与创建时 useBlockNumber 一致）
+     * @dev 仅创建者可调；仅在 Registration 状态且 newEnd > 当前 registrationEnd 时有效
+     */
+    function extendRegistrationEnd(uint256 votingId, uint256 newEnd)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(voting.allowExtension, "Extension disabled");
+        require(msg.sender == voting.creator || msg.sender == owner, "Not authorized");
+        require(voting.state == VotingState.Registration, "Must be in Registration");
+        require(newEnd > voting.registrationEnd, "newEnd must be later");
+
+        voting.registrationEnd = newEnd;
+    }
+
+    /**
+     * @notice 延长投票截止时间
+     * @param votingId 投票ID
+     * @param newEnd 新的投票截止时间（时间戳或区块号，与创建时 useBlockNumber 一致）
+     * @dev 仅创建者可调；仅在 Voting 状态且 newEnd > 当前 votingEnd 时有效
+     */
+    function extendVotingEnd(uint256 votingId, uint256 newEnd)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(voting.allowExtension, "Extension disabled");
+        require(msg.sender == voting.creator || msg.sender == owner, "Not authorized");
+        require(voting.state == VotingState.Voting, "Must be in Voting");
+        require(newEnd > voting.votingEnd, "newEnd must be later");
+
+        voting.votingEnd = newEnd;
     }
 
     /**
@@ -526,10 +601,9 @@ contract VotingFactory is IVotingTypes {
         VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
-            // 自动模式：需要满足时间条件
-            require(block.timestamp >= voting.votingStart, "Too early");
+            uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+            require(nowOrBlock >= voting.votingStart, "Too early");
         } else {
-            // 手动模式：只需创建者权限，无时间限制
             require(
                 msg.sender == voting.creator || msg.sender == owner,
                 "Not authorized"
@@ -691,10 +765,9 @@ contract VotingFactory is IVotingTypes {
         VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
-            // 自动模式：需要满足时间条件
-            require(block.timestamp > voting.votingEnd, "Voting not ended");
+            uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+            require(nowOrBlock > voting.votingEnd, "Voting not ended");
         } else {
-            // 手动模式：只需创建者权限，无时间限制
             require(
                 msg.sender == voting.creator || msg.sender == owner,
                 "Not authorized"

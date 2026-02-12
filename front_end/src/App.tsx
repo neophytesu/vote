@@ -82,6 +82,8 @@ interface LocalProposal {
   registrationRule: RegistrationRule;  // 注册规则
   tokenContractAddress: string;  // NFT/Token 合约地址
   tokenMinBalance: number;       // 最低持有数量
+  useBlockNumber?: boolean;      // 时间控制：true=用区块高度
+  allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
 }
 
 // 将合约数据转换为本地提案格式
@@ -95,7 +97,7 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     voteCounts: voting.voteCounts,
     totalVoters: voting.totalVoters,
     totalVotesCast: voting.totalVotes,
-    endTime: new Date(voting.votingEnd * 1000).toISOString(),
+    endTime: voting.useBlockNumber ? new Date(voting.votingEnd * 12 * 1000).toISOString() : new Date(voting.votingEnd * 1000).toISOString(), // 区块模式用 ~12s/块估算
     privacy: voting.privacyLevel,
     rule: voting.votingRule,
     isRegistered: userStatus?.registered ?? false,
@@ -113,6 +115,8 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     registrationRule: voting.registrationRule ?? RegistrationRule.Open,
     tokenContractAddress: voting.tokenContractAddress || "0x0000000000000000000000000000000000000000",
     tokenMinBalance: voting.tokenMinBalance || 0,
+    useBlockNumber: voting.useBlockNumber ?? false,
+    allowExtension: voting.allowExtension ?? true,
   };
 }
 
@@ -142,6 +146,11 @@ const statusConfig: Record<VotingState, { label: string; color: string; step: nu
     label: "已完成",
     color: "bg-violet-500",
     step: 5,
+  },
+  [VotingState.Cancelled]: {
+    label: "已取消",
+    color: "bg-red-500/80",
+    step: 0,
   },
 };
 
@@ -654,6 +663,11 @@ interface ProposalCardProps {
   onStartVoting: (proposalId: number) => void;
   onStartTallying: (proposalId: number) => void;
   onRevealResult: (proposalId: number) => void;
+  onCancelVoting?: (proposalId: number) => void;
+  onExtendRegistrationEnd?: (proposalId: number, newEnd: number) => Promise<boolean>;
+  onExtendVotingEnd?: (proposalId: number, newEnd: number) => Promise<boolean>;
+  getBlockNumber?: () => Promise<number | null>;
+  getChainTimestamp?: () => Promise<number | null>;
   onLoadVoteRecords?: (proposalId: number) => Promise<VoteRecord[] | null>;
   onLoadRankedVoteRecords?: (proposalId: number) => Promise<RankedVoteRecord[] | null>;
   onLoadRegisteredVoters?: (proposalId: number) => Promise<string[] | null>;
@@ -661,6 +675,164 @@ interface ProposalCardProps {
   onRejectRegistration?: (proposalId: number, voter: string) => void;
   onBatchApproveRegistrations?: (proposalId: number, voters: string[]) => void;
   onLoadPendingVoters?: (proposalId: number) => Promise<string[]>;
+}
+
+// 延长弹窗内容：增加时间式操作（分钟、小时、天可同时设置）
+interface ExtendDialogContentProps {
+  title: string;
+  currentEnd: number;
+  useBlockNumber?: boolean;
+  extendNewValue: string;
+  setExtendNewValue: (v: string) => void;
+  extendAddMinutes: number;
+  setExtendAddMinutes: (v: number) => void;
+  extendAddHours: number;
+  setExtendAddHours: (v: number) => void;
+  extendAddDays: number;
+  setExtendAddDays: (v: number) => void;
+  extendAddBlocks: number;
+  setExtendAddBlocks: (v: number) => void;
+  extendLoading: boolean;
+  onConfirm: () => Promise<boolean>;
+  onClose: () => void;
+}
+
+function ExtendDialogContent({
+  title,
+  currentEnd,
+  useBlockNumber,
+  extendNewValue,
+  setExtendNewValue,
+  extendAddMinutes,
+  setExtendAddMinutes,
+  extendAddHours,
+  setExtendAddHours,
+  extendAddDays,
+  setExtendAddDays,
+  extendAddBlocks,
+  setExtendAddBlocks,
+  extendLoading,
+  onConfirm,
+  onClose,
+}: ExtendDialogContentProps) {
+  const updateExtendNewValue = (min: number, hr: number, day: number, block: number) => {
+    if (useBlockNumber) {
+      setExtendNewValue(String(currentEnd + block));
+    } else {
+      const delta = min * 60 + hr * 3600 + day * 86400;
+      setExtendNewValue(String(currentEnd + delta));
+    }
+  };
+  const applyPreset = (minutes: number, hours: number, days: number, blocks: number) => {
+    if (useBlockNumber) {
+      setExtendAddBlocks(blocks);
+      setExtendAddMinutes(0);
+      setExtendAddHours(0);
+      setExtendAddDays(0);
+      setExtendNewValue(String(currentEnd + blocks));
+    } else {
+      setExtendAddMinutes(minutes);
+      setExtendAddHours(hours);
+      setExtendAddDays(days);
+      setExtendAddBlocks(0);
+      const delta = minutes * 60 + hours * 3600 + days * 86400;
+      setExtendNewValue(String(currentEnd + delta));
+    }
+  };
+  const newVal = Number(extendNewValue);
+  const isValid = !isNaN(newVal) && newVal > currentEnd;
+  const presetTimestamp = useBlockNumber
+    ? [
+        { label: "20 区块", minutes: 0, hours: 0, days: 0, blocks: 20 },
+        { label: "50 区块", minutes: 0, hours: 0, days: 0, blocks: 50 },
+        { label: "100 区块", minutes: 0, hours: 0, days: 0, blocks: 100 },
+      ]
+    : [
+        { label: "15 分钟", minutes: 15, hours: 0, days: 0, blocks: 0 },
+        { label: "30 分钟", minutes: 30, hours: 0, days: 0, blocks: 0 },
+        { label: "1 小时", minutes: 0, hours: 1, days: 0, blocks: 0 },
+        { label: "6 小时", minutes: 0, hours: 6, days: 0, blocks: 0 },
+        { label: "1 天", minutes: 0, hours: 0, days: 1, blocks: 0 },
+        { label: "7 天", minutes: 0, hours: 0, days: 7, blocks: 0 },
+      ];
+  const preview = useBlockNumber
+    ? `新区块号: ${extendNewValue || "—"}`
+    : extendNewValue
+      ? new Date(newVal * 1000).toLocaleString("zh-CN", { dateStyle: "medium", timeStyle: "short" })
+      : "—";
+
+  return (
+    <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100 max-w-sm">
+      <DialogHeader>
+        <DialogTitle className="text-zinc-100">{title}</DialogTitle>
+        <DialogDescription className="text-zinc-400">
+          {useBlockNumber ? "延长区块数" : "延长分钟、小时、天，可同时设置多者"}
+        </DialogDescription>
+      </DialogHeader>
+      <div className="space-y-3">
+        <p className="text-xs text-zinc-500">当前截止: {useBlockNumber ? `区块 ${currentEnd}` : new Date(currentEnd * 1000).toLocaleString("zh-CN")}</p>
+        <div className="flex flex-wrap gap-2">
+          {presetTimestamp.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => applyPreset(p.minutes, p.hours, p.days, p.blocks)}
+              className="px-3 py-1.5 rounded-lg bg-zinc-800 border border-zinc-600 hover:border-amber-500 text-zinc-200 text-sm"
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        {useBlockNumber ? (
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-zinc-400">延长</span>
+            <input
+              type="number"
+              min="1"
+              value={extendAddBlocks}
+              onChange={(e) => {
+                const v = Math.max(1, Number(e.target.value));
+                setExtendAddBlocks(v);
+                setExtendNewValue(String(currentEnd + v));
+              }}
+              className="w-24 px-2 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm"
+            />
+            <span className="text-sm text-zinc-400">区块</span>
+          </div>
+        ) : (
+          <div className="flex flex-wrap items-center gap-3">
+            <span className="text-sm text-zinc-400 w-full">自定义:</span>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" value={extendAddMinutes} onChange={(e) => { const v = Math.max(0, Number(e.target.value)); setExtendAddMinutes(v); updateExtendNewValue(v, extendAddHours, extendAddDays, extendAddBlocks); }} className="w-16 px-2 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm text-center" />
+              <span className="text-xs text-zinc-500">分钟</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" value={extendAddHours} onChange={(e) => { const v = Math.max(0, Number(e.target.value)); setExtendAddHours(v); updateExtendNewValue(extendAddMinutes, v, extendAddDays, extendAddBlocks); }} className="w-16 px-2 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm text-center" />
+              <span className="text-xs text-zinc-500">小时</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <input type="number" min="0" value={extendAddDays} onChange={(e) => { const v = Math.max(0, Number(e.target.value)); setExtendAddDays(v); updateExtendNewValue(extendAddMinutes, extendAddHours, v, extendAddBlocks); }} className="w-16 px-2 py-1.5 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-sm text-center" />
+              <span className="text-xs text-zinc-500">天</span>
+            </div>
+          </div>
+        )}
+        <p className="text-xs text-zinc-500">新的截止: {preview}</p>
+      </div>
+      <div className="flex gap-2 justify-end pt-2">
+        <Button variant="outline" onClick={onClose}>取消</Button>
+        <Button
+          disabled={extendLoading || !isValid}
+          onClick={async () => {
+            const ok = await onConfirm();
+            if (ok) onClose();
+          }}
+          className="bg-amber-500 hover:bg-amber-600"
+        >
+          {extendLoading ? "处理中..." : "确认延长"}
+        </Button>
+      </div>
+    </DialogContent>
+  );
 }
 
 // 选项颜色配置
@@ -673,13 +845,21 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
   const [showWeightGroupDialog, setShowWeightGroupDialog] = useState(false);
   const [selectedGroupIndex, setSelectedGroupIndex] = useState<number | null>(null);
   const [showPendingDialog, setShowPendingDialog] = useState(false);
+  const [showExtendRegDialog, setShowExtendRegDialog] = useState(false);
+  const [showExtendVoteDialog, setShowExtendVoteDialog] = useState(false);
+  const [extendNewValue, setExtendNewValue] = useState("");
+  const [extendAddMinutes, setExtendAddMinutes] = useState(0);
+  const [extendAddHours, setExtendAddHours] = useState(1);
+  const [extendAddDays, setExtendAddDays] = useState(0);
+  const [extendAddBlocks, setExtendAddBlocks] = useState(20);
+  const [extendLoading, setExtendLoading] = useState(false);
   const [pendingVoters, setPendingVoters] = useState<string[]>([]);
   const [voterListAddresses, setVoterListAddresses] = useState<string[]>([]);
   const [loadingVoterList, setLoadingVoterList] = useState(false);
@@ -687,7 +867,25 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
   const [rankedVoteRecords, setRankedVoteRecords] = useState<RankedVoteRecord[]>([]);
   const [notVotedAddresses, setNotVotedAddresses] = useState<string[]>([]);
   const [loadingRecords, setLoadingRecords] = useState(false);
+  const [currentBlock, setCurrentBlock] = useState<number | null>(null);
+  const [chainTimestamp, setChainTimestamp] = useState<number | null>(null);
   const status = statusConfig[proposal.status];
+
+  // 轮询链上时间/区块，以正确计算 canStart*（合约用 block.number 或 block.timestamp）
+  useEffect(() => {
+    const fetch = async () => {
+      if (proposal.useBlockNumber && getBlockNumber) {
+        const block = await getBlockNumber();
+        if (block != null) setCurrentBlock(block);
+      } else if (!proposal.useBlockNumber && getChainTimestamp) {
+        const ts = await getChainTimestamp();
+        if (ts != null) setChainTimestamp(ts);
+      }
+    };
+    fetch();
+    const iv = setInterval(fetch, 4000);
+    return () => clearInterval(iv);
+  }, [proposal.useBlockNumber, getBlockNumber, getChainTimestamp, proposal.id]);
   const totalVotes = proposal.voteCounts.reduce((a, b) => a + b, 0);
   const participationRate =
     proposal.totalVoters > 0
@@ -724,14 +922,40 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
   const canAdvanceState = proposal.autoAdvance || isCreator;
 
   // 计算时间条件是否满足（仅自动模式需要检查时间）
-  const now = Math.floor(Date.now() / 1000);
-  // 手动模式：无时间限制，随时可推进
-  const canStartRegistration = !proposal.autoAdvance || now >= proposal.registrationStart;
-  const canStartVoting = !proposal.autoAdvance || now >= proposal.votingStart;
-  const canStartTallying = !proposal.autoAdvance || now > proposal.votingEnd;
+  // 必须与合约一致：区块模式用 block.number，时间戳模式用 block.timestamp
+  // 本地节点 block.timestamp 仅随出块推进，不能用 Date.now()
+  const nowOrBlock = proposal.useBlockNumber ? (currentBlock ?? 0) : (chainTimestamp ?? 0);
+  const timeReady = proposal.useBlockNumber ? currentBlock !== null : chainTimestamp !== null;
+  const canStartRegistration = !proposal.autoAdvance || (timeReady && nowOrBlock >= proposal.registrationStart);
+  const canStartVoting = !proposal.autoAdvance || (timeReady && nowOrBlock >= proposal.votingStart);
+  const canStartTallying = !proposal.autoAdvance || (timeReady && nowOrBlock > proposal.votingEnd);
 
   const timeRemaining = () => {
-    const end = new Date(proposal.endTime);
+    if (proposal.useBlockNumber) {
+      const cur = currentBlock ?? 0;
+      if (currentBlock === null) return "区块模式";
+      if (proposal.status === VotingState.Created) {
+        const blocksLeft = proposal.registrationStart - cur;
+        if (blocksLeft <= 0) return "可推进";
+        return `还需 ${blocksLeft} 区块开始`;
+      }
+      if (proposal.status === VotingState.Registration) {
+        const blocksLeft = proposal.registrationEnd - cur;
+        if (blocksLeft <= 0) return "可推进";
+        return `还需 ${blocksLeft} 区块`;
+      }
+      if (proposal.status === VotingState.Voting) {
+        const blocksLeft = proposal.votingEnd - cur;
+        if (blocksLeft <= 0) return "可推进";
+        return `还需 ${blocksLeft} 区块`;
+      }
+      return "区块模式";
+    }
+    // 根据当前阶段使用对应的截止时间（延长 registrationEnd/votingEnd 后会通过 refresh 更新）
+    const endTs = proposal.status === VotingState.Created ? proposal.registrationStart
+      : proposal.status === VotingState.Registration ? proposal.registrationEnd
+      : proposal.votingEnd;
+    const end = new Date(endTs * 1000);
     const now = new Date();
     const diff = end.getTime() - now.getTime();
     if (diff <= 0) return "已结束";
@@ -1209,6 +1433,72 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
             </Button>
           )}
 
+          {/* 取消投票按钮 - 创建者可在 Created / Registration / Voting 状态下取消 */}
+          {(proposal.status === VotingState.Created || proposal.status === VotingState.Registration || proposal.status === VotingState.Voting) && isCreator && onCancelVoting && (
+            <Button
+              onClick={() => onCancelVoting(proposal.id)}
+              disabled={!wallet.isConnected}
+              variant="outline"
+              className="border-red-500/50 text-red-400 hover:bg-red-500/10 hover:border-red-500"
+            >
+              取消投票
+            </Button>
+          )}
+
+          {/* 延长注册期 - 创建者在 Registration 状态下 且 启用动态延长 */}
+          {proposal.status === VotingState.Registration && isCreator && proposal.allowExtension !== false && onExtendRegistrationEnd && (
+            <Button
+              onClick={() => {
+                if (proposal.useBlockNumber) {
+                  setExtendAddBlocks(20);
+                  setExtendAddMinutes(0);
+                  setExtendAddHours(0);
+                  setExtendAddDays(0);
+                  setExtendNewValue(String(proposal.registrationEnd + 20));
+                } else {
+                  setExtendAddMinutes(0);
+                  setExtendAddHours(1);
+                  setExtendAddDays(0);
+                  setExtendAddBlocks(0);
+                  setExtendNewValue(String(proposal.registrationEnd + 3600));
+                }
+                setShowExtendRegDialog(true);
+              }}
+              disabled={!wallet.isConnected}
+              variant="outline"
+              className="border-amber-500/50 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500"
+            >
+              延长注册期
+            </Button>
+          )}
+
+          {/* 延长投票期 - 创建者在 Voting 状态下 且 启用动态延长 */}
+          {proposal.status === VotingState.Voting && isCreator && proposal.allowExtension !== false && onExtendVotingEnd && (
+            <Button
+              onClick={() => {
+                if (proposal.useBlockNumber) {
+                  setExtendAddBlocks(20);
+                  setExtendAddMinutes(0);
+                  setExtendAddHours(0);
+                  setExtendAddDays(0);
+                  setExtendNewValue(String(proposal.votingEnd + 20));
+                } else {
+                  setExtendAddMinutes(0);
+                  setExtendAddHours(1);
+                  setExtendAddDays(0);
+                  setExtendAddBlocks(0);
+                  setExtendNewValue(String(proposal.votingEnd + 3600));
+                }
+                setShowExtendVoteDialog(true);
+              }}
+              disabled={!wallet.isConnected}
+              variant="outline"
+              className="border-amber-500/50 text-amber-400 hover:bg-amber-500/10 hover:border-amber-500"
+            >
+              延长投票期
+            </Button>
+          )}
+
           {/* 注册阶段按钮 */}
           {proposal.status === VotingState.Registration && (
             <>
@@ -1493,6 +1783,59 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
           )}
         </div>
       </CardContent>
+      {/* 延长注册期/投票期弹窗 - 始终挂载 */}
+      <Dialog open={showExtendRegDialog} onOpenChange={setShowExtendRegDialog}>
+        <ExtendDialogContent
+          title="延长注册截止时间"
+          currentEnd={proposal.registrationEnd}
+          useBlockNumber={proposal.useBlockNumber}
+          extendNewValue={extendNewValue}
+          setExtendNewValue={setExtendNewValue}
+          extendAddMinutes={extendAddMinutes}
+          setExtendAddMinutes={setExtendAddMinutes}
+          extendAddHours={extendAddHours}
+          setExtendAddHours={setExtendAddHours}
+          extendAddDays={extendAddDays}
+          setExtendAddDays={setExtendAddDays}
+          extendAddBlocks={extendAddBlocks}
+          setExtendAddBlocks={setExtendAddBlocks}
+          extendLoading={extendLoading}
+          onConfirm={async () => {
+            if (!onExtendRegistrationEnd) return false;
+            setExtendLoading(true);
+            const ok = await onExtendRegistrationEnd(proposal.id, Number(extendNewValue));
+            setExtendLoading(false);
+            return ok;
+          }}
+          onClose={() => setShowExtendRegDialog(false)}
+        />
+      </Dialog>
+      <Dialog open={showExtendVoteDialog} onOpenChange={setShowExtendVoteDialog}>
+        <ExtendDialogContent
+          title="延长投票截止时间"
+          currentEnd={proposal.votingEnd}
+          useBlockNumber={proposal.useBlockNumber}
+          extendNewValue={extendNewValue}
+          setExtendNewValue={setExtendNewValue}
+          extendAddMinutes={extendAddMinutes}
+          setExtendAddMinutes={setExtendAddMinutes}
+          extendAddHours={extendAddHours}
+          setExtendAddHours={setExtendAddHours}
+          extendAddDays={extendAddDays}
+          setExtendAddDays={setExtendAddDays}
+          extendAddBlocks={extendAddBlocks}
+          setExtendAddBlocks={setExtendAddBlocks}
+          extendLoading={extendLoading}
+          onConfirm={async () => {
+            if (!onExtendVotingEnd) return false;
+            setExtendLoading(true);
+            const ok = await onExtendVotingEnd(proposal.id, Number(extendNewValue));
+            setExtendLoading(false);
+            return ok;
+          }}
+          onClose={() => setShowExtendVoteDialog(false)}
+        />
+      </Dialog>
     </Card>
   );
 }
@@ -2015,15 +2358,18 @@ interface CreateProposalData {
   registrationRule: RegistrationRule;  // 注册规则
   tokenContractAddress: string;  // NFT/Token 合约地址
   tokenMinBalance: number;       // 最低持有数量
+  useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
+  allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
 }
 
 interface CreateProposalCardProps {
   wallet: WalletState;
   onCreateProposal: (proposal: CreateProposalData) => Promise<void>;
   showToast: (type: "success" | "error" | "warning" | "info", title: string, description?: string) => void;
+  getBlockNumber?: () => Promise<number | null>;
 }
 
-function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreateProposalCardProps) {
+function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumber }: CreateProposalCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -2070,11 +2416,19 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     { key: "result", label: "最终结果", value: resultVisibility, setter: setResultVisibility },
   ];
   
-  // 时间配置（单位：分钟）
-  const [registrationDelay, setRegistrationDelay] = useState(1);     // 注册开始延迟（分钟）
-  const [registrationDuration, setRegistrationDuration] = useState(5); // 注册持续时长（分钟）
-  const [votingDuration, setVotingDuration] = useState(60);          // 投票持续时长（分钟）
+  // 时间配置（单位：分钟 或 区块数）
+  const [useBlockNumber, setUseBlockNumber] = useState(false);       // 使用区块高度
+  const [useSpecificDates, setUseSpecificDates] = useState(false);  // 时间戳模式下：true=具体日期，false=相对分钟
+  const [registrationDelay, setRegistrationDelay] = useState(1);     // 注册开始延迟（分钟或区块）
+  const [registrationDuration, setRegistrationDuration] = useState(5); // 注册持续时长（分钟或区块）
+  const [votingDuration, setVotingDuration] = useState(60);          // 投票持续时长（分钟或区块）
   const [autoAdvance, setAutoAdvance] = useState(true);              // 推进模式：true=自动，false=手动
+  const [allowExtension, setAllowExtension] = useState(true);          // 是否允许动态延长注册期/投票期
+  // 具体日期模式下的四个时间点（datetime-local 格式：YYYY-MM-DDTHH:mm）
+  const [regStartDate, setRegStartDate] = useState("");
+  const [regEndDate, setRegEndDate] = useState("");
+  const [voteStartDate, setVoteStartDate] = useState("");
+  const [voteEndDate, setVoteEndDate] = useState("");
 
   const resetForm = () => {
     setTitle("");
@@ -2096,10 +2450,17 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
     setVoterListVisibility(1);
     setResultVisibility(3);
     setProgressVisibility(1);
+    setUseBlockNumber(false);
+    setUseSpecificDates(false);
     setRegistrationDelay(1);
     setRegistrationDuration(5);
     setVotingDuration(60);
+    setRegStartDate("");
+    setRegEndDate("");
+    setVoteStartDate("");
+    setVoteEndDate("");
     setAutoAdvance(true);
+    setAllowExtension(true);
     setStep(1);
   };
 
@@ -2149,12 +2510,49 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
 
     setIsSubmitting(true);
 
-    // 计算时间（转换为秒）
-    const now = Math.floor(Date.now() / 1000);
-    const regStart = now + registrationDelay * 60;
-    const regEnd = regStart + registrationDuration * 60;
-    const voteStart = regEnd;
-    const voteEnd = voteStart + votingDuration * 60;
+    let regStart: number;
+    let regEnd: number;
+    let voteStart: number;
+    let voteEnd: number;
+
+    if (useBlockNumber && getBlockNumber) {
+      const block = await getBlockNumber();
+      if (block == null) {
+        showToast("error", "无法获取区块高度", "请确保已连接钱包和正确网络");
+        setIsSubmitting(false);
+        return;
+      }
+      regStart = block + registrationDelay;
+      regEnd = regStart + registrationDuration;
+      voteStart = regEnd;
+      voteEnd = voteStart + votingDuration;
+    } else if (useBlockNumber) {
+      showToast("error", "区块模式不可用", "当前环境不支持获取区块高度");
+      setIsSubmitting(false);
+      return;
+    } else if (useSpecificDates) {
+      // 具体日期模式：将 datetime-local 转为 Unix 秒
+      if (!regStartDate || !regEndDate || !voteStartDate || !voteEndDate) {
+        showToast("error", "请填写完整的时间配置", "注册与投票的起止时间不能为空");
+        setIsSubmitting(false);
+        return;
+      }
+      regStart = Math.floor(new Date(regStartDate).getTime() / 1000);
+      regEnd = Math.floor(new Date(regEndDate).getTime() / 1000);
+      voteStart = Math.floor(new Date(voteStartDate).getTime() / 1000);
+      voteEnd = Math.floor(new Date(voteEndDate).getTime() / 1000);
+      if (regEnd <= regStart || voteStart < regEnd || voteEnd <= voteStart) {
+        showToast("error", "时间顺序无效", "请确保：注册结束 > 注册开始，投票开始 >= 注册结束，投票结束 > 投票开始");
+        setIsSubmitting(false);
+        return;
+      }
+    } else {
+      const now = Math.floor(Date.now() / 1000);
+      regStart = now + registrationDelay * 60;
+      regEnd = regStart + registrationDuration * 60;
+      voteStart = regEnd;
+      voteEnd = voteStart + votingDuration * 60;
+    }
 
     // 将可见性设置编码为位图
     const visibilityBitmap = encodeVisibilityBitmap({
@@ -2170,7 +2568,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       description,
       options,
       status: VotingState.Registration,
-      endTime: new Date(voteEnd * 1000).toISOString(),
+      endTime: useBlockNumber ? `Block ${voteEnd}` : new Date(voteEnd * 1000).toISOString(),
       privacy: privacy as PrivacyLevel,
       rule: rule as VotingRule,
       registrationStart: regStart,
@@ -2178,6 +2576,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
       votingStart: voteStart,
       votingEnd: voteEnd,
       autoAdvance,
+      allowExtension,
       visibilityBitmap,
       enableWhitelist,
       whitelist,
@@ -2191,6 +2590,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
         ? tokenContractAddress : "0x0000000000000000000000000000000000000000",
       tokenMinBalance: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
         ? tokenMinBalance : 0,
+      useBlockNumber: useBlockNumber || undefined,
     };
 
     console.log("开始创建投票，参数:", newProposal);
@@ -2836,56 +3236,147 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast }: CreatePropo
                     </div>
                   </div>
 
+                  {/* 动态延长机制 - 仅自动推进模式显示 */}
+                  {autoAdvance && (
+                    <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                      <div>
+                        <p className="text-sm font-medium text-zinc-300">允许动态延长</p>
+                        <p className="text-xs text-zinc-500">创建者可在注册期/投票期内延长截止时间</p>
+                      </div>
+                      <button
+                        onClick={() => setAllowExtension(!allowExtension)}
+                        className={`relative w-11 h-6 rounded-full transition-colors ${
+                          allowExtension ? "bg-amber-500" : "bg-zinc-700"
+                        }`}
+                      >
+                        <span
+                          className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                            allowExtension ? "left-6" : "left-1"
+                          }`}
+                        />
+                      </button>
+                    </div>
+                  )}
+
                   {/* 时间配置 - 仅自动推进模式显示 */}
                   {autoAdvance && (
                     <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-                      <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                        <Timer className="w-4 h-4" /> 时间配置（单位：分钟）
-                      </p>
-                      
-                      <div className="grid grid-cols-3 gap-3">
-                        {/* 注册开始延迟 */}
-                        <div className="space-y-1">
-                          <label className="text-xs text-zinc-400">注册开始延迟</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={registrationDelay}
-                            onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))}
-                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none"
-                          />
-                        </div>
-
-                        {/* 注册持续时长 */}
-                        <div className="space-y-1">
-                          <label className="text-xs text-zinc-400">注册阶段时长</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={registrationDuration}
-                            onChange={(e) => setRegistrationDuration(Math.max(1, Number(e.target.value)))}
-                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-emerald-500 focus:outline-none"
-                          />
-                        </div>
-
-                        {/* 投票持续时长 */}
-                        <div className="space-y-1">
-                          <label className="text-xs text-zinc-400">投票阶段时长</label>
-                          <input
-                            type="number"
-                            min="1"
-                            value={votingDuration}
-                            onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))}
-                            className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none"
-                          />
+                      <div className="flex items-center justify-between flex-wrap gap-2">
+                        <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                          <Timer className="w-4 h-4" /> 时间配置（单位：{useBlockNumber ? "区块" : useSpecificDates ? "具体日期" : "分钟"}）
+                        </p>
+                        <div className="flex items-center gap-4">
+                          {!useBlockNumber && (
+                            <div className="flex rounded-lg overflow-hidden border border-zinc-600">
+                              <button
+                                type="button"
+                                onClick={() => setUseSpecificDates(false)}
+                                className={`px-2 py-1 text-xs ${!useSpecificDates ? "bg-violet-500 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                              >
+                                相对时间
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setUseSpecificDates(true);
+                                  if (!regStartDate) {
+                                    const now = new Date();
+                                    const pad = (n: number) => String(n).padStart(2, "0");
+                                    const toStr = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+                                    setRegStartDate(toStr(now));
+                                    const rEnd = new Date(now.getTime() + 5 * 60 * 1000);
+                                    setRegEndDate(toStr(rEnd));
+                                    const vStart = new Date(rEnd.getTime());
+                                    setVoteStartDate(toStr(vStart));
+                                    const vEnd = new Date(vStart.getTime() + 60 * 60 * 1000);
+                                    setVoteEndDate(toStr(vEnd));
+                                  }
+                                }}
+                                className={`px-2 py-1 text-xs ${useSpecificDates ? "bg-violet-500 text-white" : "bg-zinc-800 text-zinc-400 hover:text-zinc-200"}`}
+                              >
+                                具体日期
+                              </button>
+                            </div>
+                          )}
+                          <label className="flex items-center gap-2 text-sm text-zinc-400 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={useBlockNumber}
+                              onChange={(e) => setUseBlockNumber(e.target.checked)}
+                              className="rounded border-zinc-600 text-violet-500 focus:ring-violet-500"
+                            />
+                            使用区块高度
+                          </label>
                         </div>
                       </div>
 
-                      {/* 时间预览 */}
-                      <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
-                        <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 创建后 <span className="text-amber-400">{registrationDelay}</span> 分钟开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 分钟</p>
-                        <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 创建后 <span className="text-violet-400">{registrationDelay + registrationDuration}</span> 分钟开始, 持续 <span className="text-violet-400">{votingDuration}</span> 分钟</p>
-                      </div>
+                      {useBlockNumber ? (
+                        <>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册开始延迟（区块）</label>
+                              <input type="number" min="1" value={registrationDelay} onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册阶段时长（区块）</label>
+                              <input type="number" min="1" value={registrationDuration} onChange={(e) => setRegistrationDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-emerald-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">投票阶段时长（区块）</label>
+                              <input type="number" min="1" value={votingDuration} onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none" />
+                            </div>
+                          </div>
+                          <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 当前块+{registrationDelay} 开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 区块</p>
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 当前块+{registrationDelay + registrationDuration} 开始, 持续 <span className="text-violet-400">{votingDuration}</span> 区块</p>
+                          </div>
+                        </>
+                      ) : useSpecificDates ? (
+                        <div className="space-y-3">
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册开始时间</label>
+                              <input type="datetime-local" value={regStartDate} onChange={(e) => setRegStartDate(e.target.value)} min={new Date().toISOString().slice(0, 16)} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-emerald-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册结束时间</label>
+                              <input type="datetime-local" value={regEndDate} onChange={(e) => setRegEndDate(e.target.value)} min={regStartDate || undefined} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-emerald-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">投票开始时间</label>
+                              <input type="datetime-local" value={voteStartDate} onChange={(e) => setVoteStartDate(e.target.value)} min={regEndDate || undefined} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-violet-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">投票结束时间</label>
+                              <input type="datetime-local" value={voteEndDate} onChange={(e) => setVoteEndDate(e.target.value)} min={voteStartDate || undefined} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-violet-500 focus:outline-none" />
+                            </div>
+                          </div>
+                          <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700">
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 将上述日期转为链上时间戳提交</p>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册开始延迟（分钟）</label>
+                              <input type="number" min="1" value={registrationDelay} onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">注册阶段时长（分钟）</label>
+                              <input type="number" min="1" value={registrationDuration} onChange={(e) => setRegistrationDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-emerald-500 focus:outline-none" />
+                            </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">投票阶段时长（分钟）</label>
+                              <input type="number" min="1" value={votingDuration} onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none" />
+                            </div>
+                          </div>
+                          <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 创建后 {registrationDelay} 分钟开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 分钟</p>
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 创建后 {registrationDelay + registrationDuration} 分钟开始, 持续 <span className="text-violet-400">{votingDuration}</span> 分钟</p>
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -3305,6 +3796,50 @@ function App() {
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  const handleCancelVoting = useCallback(async (proposalId: number) => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const success = await votingFactory.cancelVoting(proposalId);
+    if (success) {
+      addToast("success", "投票已取消", "该投票已被取消");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "取消失败", votingFactory.error);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  const handleExtendRegistrationEnd = useCallback(async (proposalId: number, newEnd: number): Promise<boolean> => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return false;
+    }
+    const success = await votingFactory.extendRegistrationEnd(proposalId, newEnd);
+    if (success) {
+      addToast("success", "注册期已延长", "新的截止时间已生效");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "延长失败", votingFactory.error);
+    }
+    return success;
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  const handleExtendVotingEnd = useCallback(async (proposalId: number, newEnd: number): Promise<boolean> => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return false;
+    }
+    const success = await votingFactory.extendVotingEnd(proposalId, newEnd);
+    if (success) {
+      addToast("success", "投票期已延长", "新的截止时间已生效");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "延长失败", votingFactory.error);
+    }
+    return success;
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
   // 揭示结果
   const handleRevealResult = useCallback(async (proposalId: number) => {
     console.log("handleRevealResult: 点击揭示结果, proposalId:", proposalId);
@@ -3391,6 +3926,8 @@ function App() {
       registrationRule: proposalData.registrationRule ?? RegistrationRule.Open,
       tokenContractAddress: proposalData.tokenContractAddress || "0x0000000000000000000000000000000000000000",
       tokenMinBalance: proposalData.tokenMinBalance || 0,
+      useBlockNumber: proposalData.useBlockNumber ?? false,
+      allowExtension: proposalData.allowExtension ?? true,
     });
 
     if (votingId !== null) {
@@ -3539,6 +4076,11 @@ function App() {
                     onStartVoting={handleStartVoting}
                     onStartTallying={handleStartTallying}
                     onRevealResult={handleRevealResult}
+                    onCancelVoting={handleCancelVoting}
+                    onExtendRegistrationEnd={handleExtendRegistrationEnd}
+                    onExtendVotingEnd={handleExtendVotingEnd}
+                    getBlockNumber={votingFactory.getBlockNumber}
+                    getChainTimestamp={votingFactory.getChainTimestamp}
                     onLoadVoteRecords={handleLoadVoteRecords}
                     onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
@@ -3552,7 +4094,7 @@ function App() {
 
               {/* 侧边栏 */}
               <div className="space-y-4">
-                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
                 <TechStack />
               </div>
             </div>
@@ -3591,6 +4133,11 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onCancelVoting={handleCancelVoting}
+                        onExtendRegistrationEnd={handleExtendRegistrationEnd}
+                        onExtendVotingEnd={handleExtendVotingEnd}
+                        getBlockNumber={votingFactory.getBlockNumber}
+                        getChainTimestamp={votingFactory.getChainTimestamp}
                         onLoadVoteRecords={handleLoadVoteRecords}
                         onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
@@ -3603,7 +4150,7 @@ function App() {
                 )}
               </div>
               <div className="space-y-4">
-                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
                 <TechStack />
               </div>
             </div>
@@ -3619,7 +4166,7 @@ function App() {
                       <p className="text-zinc-400">正在加载...</p>
                     </CardContent>
                   </Card>
-                ) : proposals.filter(p => p.status === VotingState.Finalized).length === 0 ? (
+                ) : proposals.filter(p => p.status === VotingState.Finalized || p.status === VotingState.Cancelled).length === 0 ? (
                   <Card className="bg-zinc-900/50 border-zinc-800">
                     <CardContent className="py-12 text-center">
                       <p className="text-zinc-500">暂无已完成的提案</p>
@@ -3627,7 +4174,7 @@ function App() {
                   </Card>
                 ) : (
                   proposals
-                    .filter((p) => p.status === VotingState.Finalized)
+                    .filter((p) => p.status === VotingState.Finalized || p.status === VotingState.Cancelled)
                     .map((proposal) => (
                       <ProposalCard 
                         key={proposal.id} 
@@ -3642,6 +4189,11 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onCancelVoting={handleCancelVoting}
+                        onExtendRegistrationEnd={handleExtendRegistrationEnd}
+                        onExtendVotingEnd={handleExtendVotingEnd}
+                        getBlockNumber={votingFactory.getBlockNumber}
+                        getChainTimestamp={votingFactory.getChainTimestamp}
                         onLoadVoteRecords={handleLoadVoteRecords}
                         onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                         onLoadRegisteredVoters={handleLoadRegisteredVoters}
@@ -3654,7 +4206,7 @@ function App() {
                 )}
               </div>
               <div className="space-y-4">
-                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
+                <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
                 <TechStack />
               </div>
             </div>
@@ -3778,6 +4330,11 @@ function App() {
                             onStartVoting={handleStartVoting}
                             onStartTallying={handleStartTallying}
                             onRevealResult={handleRevealResult}
+                            onCancelVoting={handleCancelVoting}
+                            onExtendRegistrationEnd={handleExtendRegistrationEnd}
+                            onExtendVotingEnd={handleExtendVotingEnd}
+                            getBlockNumber={votingFactory.getBlockNumber}
+                            getChainTimestamp={votingFactory.getChainTimestamp}
                             onLoadVoteRecords={handleLoadVoteRecords}
                             onLoadRankedVoteRecords={handleLoadRankedVoteRecords}
                             onLoadRegisteredVoters={handleLoadRegisteredVoters}
@@ -3790,7 +4347,7 @@ function App() {
                       )}
                     </div>
                     <div className="space-y-4">
-                      <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} />
+                      <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
                       <TechStack />
                     </div>
                   </div>

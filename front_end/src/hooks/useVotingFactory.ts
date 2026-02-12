@@ -40,6 +40,8 @@ export interface VotingDetails {
   registrationRule: RegistrationRule;  // 注册规则
   tokenContractAddress: string;  // NFT/Token 合约地址
   tokenMinBalance: number;       // 最低持有数量
+  useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
+  allowExtension?: boolean;     // 是否允许动态延长注册期/投票期
 }
 
 /**
@@ -66,6 +68,8 @@ export interface CreateVotingParams {
   registrationRule: RegistrationRule;  // 注册规则
   tokenContractAddress: string;  // NFT/Token 合约地址
   tokenMinBalance: number;       // 最低持有数量
+  useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
+  allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
 }
 
 /**
@@ -179,6 +183,8 @@ export function useVotingFactory(chainId: number | null) {
       registrationRule: number;
       tokenContractAddress: string;
       tokenMinBalance: bigint;
+      useBlockNumber?: boolean;
+      allowExtension?: boolean;
     };
 
     return {
@@ -207,6 +213,8 @@ export function useVotingFactory(chainId: number | null) {
       registrationRule: Number(d.registrationRule) as RegistrationRule,
       tokenContractAddress: d.tokenContractAddress || "0x0000000000000000000000000000000000000000",
       tokenMinBalance: Number(d.tokenMinBalance || 0),
+      useBlockNumber: d.useBlockNumber ?? false,
+      allowExtension: d.allowExtension ?? true,
     };
   };
 
@@ -245,6 +253,8 @@ export function useVotingFactory(chainId: number | null) {
           registrationRule: params.registrationRule ?? 0,
           tokenContractAddress: params.tokenContractAddress || "0x0000000000000000000000000000000000000000",
           tokenMinBalance: params.tokenMinBalance || 0,
+          useBlockNumber: params.useBlockNumber ?? false,
+          allowExtension: params.allowExtension ?? true,
         });
         
         console.log("useVotingFactory: 交易已发送, hash:", tx.hash);
@@ -311,6 +321,112 @@ export function useVotingFactory(chainId: number | null) {
     },
     [getContract]
   );
+
+  /**
+   * 取消投票
+   */
+  const cancelVoting = useCallback(
+    async (votingId: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const tx = await contract.cancelVoting(votingId);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "取消投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 延长注册截止时间
+   */
+  const extendRegistrationEnd = useCallback(
+    async (votingId: number, newEnd: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const tx = await contract.extendRegistrationEnd(votingId, newEnd);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "延长注册期失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 延长投票截止时间
+   */
+  const extendVotingEnd = useCallback(
+    async (votingId: number, newEnd: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const tx = await contract.extendVotingEnd(votingId, newEnd);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "延长投票期失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 获取当前区块高度（用于区块时间模式）
+   */
+  const getBlockNumber = useCallback(async (): Promise<number | null> => {
+    try {
+      const queryContract = await getQueryContract();
+      const provider = queryContract.runner?.provider;
+      if (!provider) return null;
+      const block = await provider.getBlock("latest");
+      return block?.number ?? null;
+    } catch {
+      return null;
+    }
+  }, [getQueryContract]);
+
+  /**
+   * 获取链上当前时间戳（最新区块的 timestamp，用于时间戳模式）
+   * 本地 Hardhat 节点：block.timestamp 仅随出块推进，与 Date.now() 不同步
+   */
+  const getChainTimestamp = useCallback(async (): Promise<number | null> => {
+    try {
+      const queryContract = await getQueryContract();
+      const provider = queryContract.runner?.provider;
+      if (!provider) return null;
+      const block = await provider.getBlock("latest");
+      return block?.timestamp != null ? Number(block.timestamp) : null;
+    } catch {
+      return null;
+    }
+  }, [getQueryContract]);
 
   /**
    * 注册选民
@@ -972,6 +1088,11 @@ export function useVotingFactory(chainId: number | null) {
     isContractDeployed,
     createVoting,
     startRegistration,
+    cancelVoting,
+    extendRegistrationEnd,
+    extendVotingEnd,
+    getBlockNumber,
+    getChainTimestamp,
     registerVoter,
     registerVoterWeighted,
     approveRegistration,

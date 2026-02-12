@@ -156,7 +156,7 @@ export const VotingFactoryABI = [
   "event RegistrationRejected(uint256 indexed votingId, address indexed voter)",
   
   // 写入函数
-  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance) params) returns (uint256)",
+  "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
@@ -169,6 +169,9 @@ export const VotingFactoryABI = [
   "function castRankedVote(uint256 votingId, uint256[] rankedOptions)",
   "function startTallying(uint256 votingId)",
   "function revealResult(uint256 votingId)",
+  "function cancelVoting(uint256 votingId)",
+  "function extendRegistrationEnd(uint256 votingId, uint256 newEnd)",
+  "function extendVotingEnd(uint256 votingId, uint256 newEnd)",
   
   // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
@@ -180,9 +183,9 @@ export const VotingFactoryABI = [
  * 查询中心合约 ABI（所有只读查询）
  */
 export const QueryCenterABI = [
-  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance))",
+  "function getVoting(uint256 votingId) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension))",
   "function getAllVotingIds() view returns (uint256[])",
-  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
+  "function getRecentVotings(uint256 count) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension)[])",
   "function getVotingsByCreator(address creator) view returns (uint256[])",
   "function getVotingsByVoter(address voter) view returns (uint256[])",
   "function getVotingOptions(uint256 votingId) view returns (string[])",
@@ -190,7 +193,7 @@ export const QueryCenterABI = [
   "function getUserVotingStatus(uint256 votingId, address user) view returns (bool registered, bool voted)",
   "function getUserFullStatus(uint256 votingId, address user) view returns (bool registered, bool pending, bool voted)",
   "function getVotingState(uint256 votingId) view returns (uint8)",
-  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance)[])",
+  "function getVotingsBatch(uint256[] votingIds) view returns (tuple(uint256 id, address creator, string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint8 state, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, uint256 totalVoters, uint256 totalVotes, uint256[] voteCounts, bool resultRevealed, uint256 createdAt, bool autoAdvance, uint16 visibilityBitmap, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension)[])",
   "function isRegistered(uint256 votingId, address voter) view returns (bool)",
   "function isPendingVoter(uint256 votingId, address voter) view returns (bool)",
   "function hasVoted(uint256 votingId, address voter) view returns (bool)",
@@ -210,6 +213,7 @@ export const VotingState = {
   Voting: 2,
   Tallying: 3,
   Finalized: 4,
+  Cancelled: 5,
 } as const;
 export type VotingState = (typeof VotingState)[keyof typeof VotingState];
 
@@ -253,6 +257,7 @@ export type RegistrationRule = (typeof RegistrationRule)[keyof typeof Registrati
 export const CONTRACT_ADDRESSES = {
   // Sepolia 测试网地址 (部署后更新)
   sepolia: {
+    votingCore: "0x0000000000000000000000000000000000000000" as const,
     votingFactory: "0x0000000000000000000000000000000000000000",
     registrationCenter: "0x0000000000000000000000000000000000000000",
     votingCenter: "0x0000000000000000000000000000000000000000",
@@ -262,6 +267,7 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
+    votingCore: "${addresses.votingFactory}" as const,
     votingFactory: "${addresses.votingFactory}",
     registrationCenter: "${addresses.registrationCenter}",
     votingCenter: "${addresses.votingCenter}",

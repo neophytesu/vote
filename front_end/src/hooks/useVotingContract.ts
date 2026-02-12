@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { BrowserProvider, Contract } from "ethers";
 import {
   VotingCoreABI,
@@ -309,15 +309,15 @@ export function useVotingContract(chainId: number | null) {
             title: proposal.config.title,
             description: proposal.config.description,
             options: proposal.config.options,
-            votingRule: Number(proposal.config.votingRule),
-            privacyLevel: Number(proposal.config.privacyLevel),
+            votingRule: Number(proposal.config.votingRule) as VotingRule,
+            privacyLevel: Number(proposal.config.privacyLevel) as PrivacyLevel,
             registrationStart: Number(proposal.config.registrationStart),
             registrationEnd: Number(proposal.config.registrationEnd),
             votingStart: Number(proposal.config.votingStart),
             votingEnd: Number(proposal.config.votingEnd),
             quorum: Number(proposal.config.quorum),
           },
-          state: Number(proposal.state),
+          state: Number(proposal.state) as VotingState,
           totalVoters: Number(proposal.totalVoters),
           totalVotes: Number(proposal.totalVotes),
           resultRevealed: proposal.resultRevealed,
@@ -439,6 +439,7 @@ export const stateLabels: Record<VotingState, string> = {
   [VotingState.Voting]: "投票中",
   [VotingState.Tallying]: "计票中",
   [VotingState.Finalized]: "已完成",
+  [VotingState.Cancelled]: "已取消",
 };
 
 /**

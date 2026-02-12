@@ -6,13 +6,14 @@ pragma solidity ^0.8.28;
  * @notice 投票系统的类型定义
  */
 interface IVotingTypes {
-    /// @notice 投票状态枚举 - 对应文档中的5个阶段
+    /// @notice 投票状态枚举 - 对应文档中的5个阶段 + 取消
     enum VotingState {
         Created,        // Step 1: 选票已创建
         Registration,   // Step 2: 选民注册中
         Voting,         // Step 3: 投票进行中
         Tallying,       // Step 4: 计票中
-        Finalized       // Step 5: 已完成
+        Finalized,      // Step 5: 已完成
+        Cancelled       // 已取消
     }
 
     /// @notice 投票规则类型
