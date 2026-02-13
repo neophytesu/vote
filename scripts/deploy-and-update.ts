@@ -29,7 +29,7 @@ async function main() {
   // 检查部署文件是否存在
   if (!fs.existsSync(deploymentPath)) {
     console.error("❌ 未找到部署结果文件，请先运行部署命令:");
-    console.error("   npx hardhat ignition deploy ignition/modules/VotingFactory.ts --network localhost");
+    console.error("   npx hardhat run scripts/deploy-full.ts --network localhost");
     process.exit(1);
   }
 
@@ -42,6 +42,7 @@ async function main() {
   // 提取地址
   const addresses = {
     votingFactory: deployedAddresses["VotingFactoryModule#VotingFactory"] || "0x0000000000000000000000000000000000000000",
+    anonymousVoting: deployedAddresses["VotingFactoryModule#AnonymousVoting"] || "0x0000000000000000000000000000000000000000",
     registrationCenter: deployedAddresses["VotingFactoryModule#RegistrationCenter"] || "0x0000000000000000000000000000000000000000",
     votingCenter: deployedAddresses["VotingFactoryModule#VotingCenter"] || "0x0000000000000000000000000000000000000000",
     revealCenter: deployedAddresses["VotingFactoryModule#RevealCenter"] || "0x0000000000000000000000000000000000000000",
@@ -180,6 +181,21 @@ export const VotingFactoryABI = [
 ] as const;
 
 /**
+ * 匿名投票合约 ABI（注册、投票、Semaphore 群组查询）
+ */
+export const AnonymousVotingABI = [
+  "function semaphore() view returns (address)",
+  "function votingSemaphoreGroupId(uint256 votingId) view returns (uint256)",
+  "function votingSemaphoreGroupIdByWeight(uint256 votingId, uint256 groupIndex) view returns (uint256)",
+  "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
+  "function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)",
+  "function castVoteAnonymous(uint256 votingId, uint256 optionIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+] as const;
+
+/**
  * 查询中心合约 ABI（所有只读查询）
  */
 export const QueryCenterABI = [
@@ -259,6 +275,7 @@ export const CONTRACT_ADDRESSES = {
   sepolia: {
     votingCore: "0x0000000000000000000000000000000000000000" as const,
     votingFactory: "0x0000000000000000000000000000000000000000",
+    anonymousVoting: "0x0000000000000000000000000000000000000000",
     registrationCenter: "0x0000000000000000000000000000000000000000",
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
@@ -269,6 +286,7 @@ export const CONTRACT_ADDRESSES = {
   localhost: {
     votingCore: "${addresses.votingFactory}" as const,
     votingFactory: "${addresses.votingFactory}",
+    anonymousVoting: "${addresses.anonymousVoting}",
     registrationCenter: "${addresses.registrationCenter}",
     votingCenter: "${addresses.votingCenter}",
     revealCenter: "${addresses.revealCenter}",
@@ -301,6 +319,7 @@ export function getContractAddresses(chainId: number) {
   console.log(`   文件: ${frontendAbiPath}`);
   console.log("\n📍 新地址:");
   console.log(`   VotingFactory:      ${addresses.votingFactory}`);
+  console.log(`   AnonymousVoting:    ${addresses.anonymousVoting}`);
   console.log(`   QueryCenter:        ${addresses.queryCenter}`);
   console.log(`   RegistrationCenter: ${addresses.registrationCenter}`);
   console.log(`   VotingCenter:       ${addresses.votingCenter}`);

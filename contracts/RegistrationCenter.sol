@@ -65,9 +65,15 @@ contract RegistrationCenter is IVotingTypes {
     /// @notice 主投票合约地址
     address public votingCore;
 
-    /// @notice 仅限主合约调用
-    modifier onlyVotingCore() {
-        require(msg.sender == votingCore, "Only VotingCore can call");
+    /// @notice 匿名投票合约地址
+    address public anonymousVoting;
+
+    /// @notice 仅限主合约或匿名投票合约调用
+    modifier onlyVotingCoreOrAnonymous() {
+        require(
+            msg.sender == votingCore || msg.sender == anonymousVoting,
+            "Only VotingCore or AnonymousVoting can call"
+        );
         _;
     }
 
@@ -80,6 +86,12 @@ contract RegistrationCenter is IVotingTypes {
     function setVotingCore(address _votingCore) external {
         require(votingCore == address(0), "VotingCore already set");
         votingCore = _votingCore;
+    }
+
+    /// @notice 设置匿名投票合约地址
+    function setAnonymousVoting(address _anonymousVoting) external {
+        require(msg.sender == votingCore, "Only VotingCore can set");
+        anonymousVoting = _anonymousVoting;
     }
 
     /**
@@ -96,7 +108,7 @@ contract RegistrationCenter is IVotingTypes {
     function registerVoter(
         uint256 proposalId, 
         address voter
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!isRegistered[proposalId][voter], "Already registered");
         require(voter != address(0), "Invalid voter address");
 
@@ -118,7 +130,7 @@ contract RegistrationCenter is IVotingTypes {
     function batchRegisterVoters(
         uint256 proposalId,
         address[] calldata voters
-    ) external onlyVotingCore {
+    ) external onlyVotingCoreOrAnonymous {
         for (uint256 i = 0; i < voters.length; i++) {
             if (!isRegistered[proposalId][voters[i]] && voters[i] != address(0)) {
                 isRegistered[proposalId][voters[i]] = true;
@@ -142,7 +154,7 @@ contract RegistrationCenter is IVotingTypes {
         address voter,
         uint256 weight,
         uint256 groupIndex
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!isRegistered[proposalId][voter], "Already registered");
         require(voter != address(0), "Invalid voter address");
         require(weight > 0, "Weight must be > 0");
@@ -173,7 +185,7 @@ contract RegistrationCenter is IVotingTypes {
         address[] calldata voters,
         uint256[] calldata weights,
         uint256[] calldata groupIndexes
-    ) external onlyVotingCore {
+    ) external onlyVotingCoreOrAnonymous {
         require(voters.length == weights.length && voters.length == groupIndexes.length, "Array length mismatch");
         for (uint256 i = 0; i < voters.length; i++) {
             if (!isRegistered[proposalId][voters[i]] && voters[i] != address(0) && weights[i] > 0) {
@@ -256,7 +268,7 @@ contract RegistrationCenter is IVotingTypes {
     function requestRegistration(
         uint256 proposalId,
         address voter
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!isRegistered[proposalId][voter], "Already registered");
         require(!isPending[proposalId][voter], "Already pending");
         require(voter != address(0), "Invalid voter address");
@@ -282,7 +294,7 @@ contract RegistrationCenter is IVotingTypes {
         address voter,
         uint256 weight,
         uint256 groupIndex
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!isRegistered[proposalId][voter], "Already registered");
         require(!isPending[proposalId][voter], "Already pending");
         require(voter != address(0), "Invalid voter address");
@@ -307,7 +319,7 @@ contract RegistrationCenter is IVotingTypes {
     function approveRegistration(
         uint256 proposalId,
         address voter
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(isPending[proposalId][voter], "Not pending");
         require(!isRegistered[proposalId][voter], "Already registered");
 
@@ -343,7 +355,7 @@ contract RegistrationCenter is IVotingTypes {
     function batchApproveRegistrations(
         uint256 proposalId,
         address[] calldata voters
-    ) external onlyVotingCore {
+    ) external onlyVotingCoreOrAnonymous {
         for (uint256 i = 0; i < voters.length; i++) {
             if (isPending[proposalId][voters[i]] && !isRegistered[proposalId][voters[i]]) {
                 isPending[proposalId][voters[i]] = false;
@@ -376,7 +388,7 @@ contract RegistrationCenter is IVotingTypes {
     function rejectRegistration(
         uint256 proposalId,
         address voter
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(isPending[proposalId][voter], "Not pending");
 
         isPending[proposalId][voter] = false;

@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import { BrowserProvider, Contract } from "ethers";
 import {
   VotingFactoryABI,
+  AnonymousVotingABI,
   QueryCenterABI,
   RegistrationCenterABI,
   VotingState,
@@ -140,30 +141,57 @@ export function useVotingFactory(chainId: number | null) {
     return new Contract(addresses.votingFactory, VotingFactoryABI, provider);
   }, [chainId]);
 
+  // 获取匿名投票合约实例（只读）
+  const getAnonymousReadOnlyContract = useCallback(async () => {
+    if (!window.ethereum || !chainId) {
+      throw new Error("请先连接钱包");
+    }
+    const addresses = getContractAddresses(chainId);
+    if (addresses.anonymousVoting === "0x0000000000000000000000000000000000000000") {
+      throw new Error("AnonymousVoting 合约尚未部署到当前网络");
+    }
+    const provider = new BrowserProvider(window.ethereum);
+    return new Contract(addresses.anonymousVoting, AnonymousVotingABI, provider);
+  }, [chainId]);
+
+  // 获取匿名投票合约实例（写操作）
+  const getAnonymousContract = useCallback(async () => {
+    if (!window.ethereum || !chainId) {
+      throw new Error("请先连接钱包");
+    }
+    const addresses = getContractAddresses(chainId);
+    if (addresses.anonymousVoting === "0x0000000000000000000000000000000000000000") {
+      throw new Error("AnonymousVoting 合约尚未部署到当前网络");
+    }
+    const provider = new BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    return new Contract(addresses.anonymousVoting, AnonymousVotingABI, signer);
+  }, [chainId]);
+
   // 获取 Semaphore 合约地址（用于匿名投票拉取群组数据）
   const getSemaphoreAddress = useCallback(async (): Promise<string> => {
-    const c = await getReadOnlyContract();
+    const c = await getAnonymousReadOnlyContract();
     return c.semaphore() as Promise<string>;
-  }, [getReadOnlyContract]);
+  }, [getAnonymousReadOnlyContract]);
 
   // 获取投票的 Semaphore 群组 ID（简单多数/排序选择）
   const getVotingSemaphoreGroupId = useCallback(
     async (votingId: number): Promise<number> => {
-      const c = await getReadOnlyContract();
+      const c = await getAnonymousReadOnlyContract();
       const id = await c.votingSemaphoreGroupId(votingId);
       return Number(id);
     },
-    [getReadOnlyContract]
+    [getAnonymousReadOnlyContract]
   );
 
   // 获取加权投票的 Semaphore 群组 ID（按权重分组索引）
   const getVotingSemaphoreGroupIdByWeight = useCallback(
     async (votingId: number, groupIndex: number): Promise<number> => {
-      const c = await getReadOnlyContract();
+      const c = await getAnonymousReadOnlyContract();
       const id = await c.votingSemaphoreGroupIdByWeight(votingId, groupIndex);
       return Number(id);
     },
-    [getReadOnlyContract]
+    [getAnonymousReadOnlyContract]
   );
 
   // 获取 Provider（用于查询事件等）
@@ -532,7 +560,7 @@ export function useVotingFactory(chainId: number | null) {
     async (votingId: number, identityCommitment: bigint): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const tx = await contract.registerVoterAnonymous(votingId, identityCommitment);
         await tx.wait();
         setState((prev) => ({ ...prev, isLoading: false }));
@@ -547,7 +575,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**
@@ -557,7 +585,7 @@ export function useVotingFactory(chainId: number | null) {
     async (votingId: number, identityCommitment: bigint, groupIndex: number): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const tx = await contract.registerVoterAnonymousWeighted(votingId, identityCommitment, groupIndex);
         await tx.wait();
         setState((prev) => ({ ...prev, isLoading: false }));
@@ -572,7 +600,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**
@@ -593,7 +621,7 @@ export function useVotingFactory(chainId: number | null) {
     ): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const proofTuple = {
           merkleTreeDepth: proof.merkleTreeDepth,
           merkleTreeRoot: proof.merkleTreeRoot,
@@ -616,7 +644,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**
@@ -638,7 +666,7 @@ export function useVotingFactory(chainId: number | null) {
     ): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const proofTuple = {
           merkleTreeDepth: proof.merkleTreeDepth,
           merkleTreeRoot: proof.merkleTreeRoot,
@@ -661,7 +689,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**
@@ -682,7 +710,7 @@ export function useVotingFactory(chainId: number | null) {
     ): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const proofTuple = {
           merkleTreeDepth: proof.merkleTreeDepth,
           merkleTreeRoot: proof.merkleTreeRoot,
@@ -705,7 +733,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**
@@ -726,7 +754,7 @@ export function useVotingFactory(chainId: number | null) {
     ): Promise<boolean> => {
       setState((prev) => ({ ...prev, isLoading: true, error: null }));
       try {
-        const contract = await getContract();
+        const contract = await getAnonymousContract();
         const proofTuple = {
           merkleTreeDepth: proof.merkleTreeDepth,
           merkleTreeRoot: proof.merkleTreeRoot,
@@ -749,7 +777,7 @@ export function useVotingFactory(chainId: number | null) {
         return false;
       }
     },
-    [getContract]
+    [getAnonymousContract]
   );
 
   /**

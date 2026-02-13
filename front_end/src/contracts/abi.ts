@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-13T14:46:13.653Z
+ * 最后更新: 2026-02-13T21:06:49.679Z
  */
 
 export const VotingCoreABI = [
@@ -107,18 +107,12 @@ export const VotingFactoryABI = [
   "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
-  "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
-  "function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)",
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
   "function approveRegistration(uint256 votingId, address voter)",
   "function batchApproveRegistrations(uint256 votingId, address[] voters)",
   "function rejectRegistration(uint256 votingId, address voter)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
-  "function castVoteAnonymous(uint256 votingId, uint256 optionIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
-  "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
-  "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
-  "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castQuadraticVote(uint256 votingId, uint256[] optionIndexes, uint256[] voteAmounts)",
   "function castRankedVote(uint256 votingId, uint256[] rankedOptions)",
   "function startTallying(uint256 votingId)",
@@ -129,11 +123,23 @@ export const VotingFactoryABI = [
   
   // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
+  "function getEffectiveState(uint256 votingId) view returns (uint8)",
+  "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
+] as const;
+
+/**
+ * 匿名投票合约 ABI（注册、投票、Semaphore 群组查询）
+ */
+export const AnonymousVotingABI = [
   "function semaphore() view returns (address)",
   "function votingSemaphoreGroupId(uint256 votingId) view returns (uint256)",
   "function votingSemaphoreGroupIdByWeight(uint256 votingId, uint256 groupIndex) view returns (uint256)",
-  "function getEffectiveState(uint256 votingId) view returns (uint8)",
-  "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
+  "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
+  "function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)",
+  "function castVoteAnonymous(uint256 votingId, uint256 optionIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
 ] as const;
 
 /**
@@ -216,6 +222,7 @@ export const CONTRACT_ADDRESSES = {
   sepolia: {
     votingCore: "0x0000000000000000000000000000000000000000" as const,
     votingFactory: "0x0000000000000000000000000000000000000000",
+    anonymousVoting: "0x0000000000000000000000000000000000000000",
     registrationCenter: "0x0000000000000000000000000000000000000000",
     votingCenter: "0x0000000000000000000000000000000000000000",
     revealCenter: "0x0000000000000000000000000000000000000000",
@@ -224,13 +231,14 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingCore: "0xab16A69A5a8c12C732e0DEFF4BE56A70bb64c926" as const,
-    votingFactory: "0xab16A69A5a8c12C732e0DEFF4BE56A70bb64c926",
-    registrationCenter: "0x276C216D241856199A83bf27b2286659e5b877D3",
-    votingCenter: "0xffa7CA1AEEEbBc30C874d32C7e22F052BbEa0429",
-    revealCenter: "0x3347B4d90ebe72BeFb30444C9966B2B990aE9FcB",
-    statisticsCenter: "0x5bf5b11053e734690269C6B9D438F8C9d48F528A",
-    queryCenter: "0x1f10F3Ba7ACB61b2F50B9d6DdCf91a6f787C0E82",
+    votingCore: "0x610178da211fef7d417bc0e6fed39f05609ad788" as const,
+    votingFactory: "0x610178da211fef7d417bc0e6fed39f05609ad788",
+    anonymousVoting: "0xb7f8bc63bbcad18155201308c8f3540b07f84f5e",
+    registrationCenter: "0x0165878a594ca255338adfa4d48449f69242eb8f",
+    votingCenter: "0xa513e6e4b8f2a923d98304ec87f64353c4d5c853",
+    revealCenter: "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6",
+    statisticsCenter: "0x8a791620dd6260079bf849dc5567adc3f2fdc318",
+    queryCenter: "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0",
   },
 } as const;
 

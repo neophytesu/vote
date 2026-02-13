@@ -37,6 +37,9 @@ contract VotingCenter is IVotingTypes {
 
     /// @notice 主投票合约地址
     address public votingCore;
+
+    /// @notice 匿名投票合约地址
+    address public anonymousVoting;
     
     /// @notice 注册中心地址
     address public registrationCenter;
@@ -59,9 +62,12 @@ contract VotingCenter is IVotingTypes {
     /// @notice 提案ID => 所有选民的排名列表（排序选择投票使用）
     mapping(uint256 => uint256[][]) private rankedVotes;
 
-    /// @notice 仅限主合约调用
-    modifier onlyVotingCore() {
-        require(msg.sender == votingCore, "Only VotingCore can call");
+    /// @notice 仅限主合约或匿名投票合约调用
+    modifier onlyVotingCoreOrAnonymous() {
+        require(
+            msg.sender == votingCore || msg.sender == anonymousVoting,
+            "Only VotingCore or AnonymousVoting can call"
+        );
         _;
     }
 
@@ -79,6 +85,12 @@ contract VotingCenter is IVotingTypes {
         registrationCenter = _registrationCenter;
     }
 
+    /// @notice 设置匿名投票合约地址
+    function setAnonymousVoting(address _anonymousVoting) external {
+        require(msg.sender == votingCore, "Only VotingCore can set");
+        anonymousVoting = _anonymousVoting;
+    }
+
     /**
      * @notice 初始化提案的选项数量
      * @param proposalId 提案ID
@@ -87,7 +99,7 @@ contract VotingCenter is IVotingTypes {
     function initializeProposal(
         uint256 proposalId, 
         uint256 _optionCount
-    ) external onlyVotingCore {
+    ) external onlyVotingCoreOrAnonymous {
         require(_optionCount > 0, "Must have at least one option");
         optionCounts[proposalId] = _optionCount;
     }
@@ -111,7 +123,7 @@ contract VotingCenter is IVotingTypes {
         address voter,
         uint256 optionIndex,
         uint256 weight
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!hasVoted[proposalId][voter], "Already voted");
         require(optionIndex < optionCounts[proposalId], "Invalid option index");
         require(weight > 0, "Weight must be > 0");
@@ -146,7 +158,7 @@ contract VotingCenter is IVotingTypes {
     function castVoteAnonymous(
         uint256 proposalId,
         uint256 optionIndex
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(optionIndex < optionCounts[proposalId], "Invalid option index");
 
         voteCounts[proposalId][optionIndex] += 1;
@@ -174,7 +186,7 @@ contract VotingCenter is IVotingTypes {
         uint256 proposalId,
         uint256 optionIndex,
         uint256 weight
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(optionIndex < optionCounts[proposalId], "Invalid option index");
         require(weight > 0, "Weight must be > 0");
 
@@ -201,7 +213,7 @@ contract VotingCenter is IVotingTypes {
     function castRankedVoteAnonymous(
         uint256 proposalId,
         uint256[] memory rankedOptions
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         uint256 numOptions = optionCounts[proposalId];
         require(rankedOptions.length == numOptions, "Must rank all options");
 
@@ -237,7 +249,7 @@ contract VotingCenter is IVotingTypes {
         uint256 proposalId,
         uint256[] memory optionIndexes,
         uint256[] memory voteAmounts
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(optionIndexes.length == voteAmounts.length, "Array length mismatch");
         require(optionIndexes.length > 0, "Must vote for at least one option");
 
@@ -281,7 +293,7 @@ contract VotingCenter is IVotingTypes {
         uint256[] calldata optionIndexes,
         uint256[] calldata voteAmounts,
         uint256 totalCredits
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!hasVoted[proposalId][voter], "Already voted");
         require(optionIndexes.length == voteAmounts.length, "Array length mismatch");
         require(optionIndexes.length > 0, "Must vote for at least one option");
@@ -332,7 +344,7 @@ contract VotingCenter is IVotingTypes {
         uint256 proposalId,
         address voter,
         uint256[] calldata rankedOptions
-    ) external onlyVotingCore returns (bool success) {
+    ) external onlyVotingCoreOrAnonymous returns (bool success) {
         require(!hasVoted[proposalId][voter], "Already voted");
         uint256 numOptions = optionCounts[proposalId];
         require(rankedOptions.length == numOptions, "Must rank all options");
@@ -443,7 +455,7 @@ contract VotingCenter is IVotingTypes {
     function writeRankedResultCounts(
         uint256 proposalId,
         uint256[] calldata counts
-    ) external onlyVotingCore {
+    ) external onlyVotingCoreOrAnonymous {
         for (uint256 i = 0; i < counts.length; i++) {
             voteCounts[proposalId][i] = counts[i];
         }

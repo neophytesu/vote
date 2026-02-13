@@ -49,12 +49,21 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     statisticsCenter,
   ]);
 
+  // 6b. 部署匿名投票合约
+  const anonymousVoting = m.contract("AnonymousVoting", [
+    votingFactory,
+    semaphore,
+    registrationCenter,
+    votingCenter,
+    statisticsCenter,
+  ]);
+
   // 7. 部署查询中心，传入工厂合约地址
   const queryCenter = m.contract("QueryCenter", [votingFactory]);
 
-  // 8. 设置 Semaphore 到 VotingFactory
-  m.call(votingFactory, "setSemaphore", [semaphore], {
-    id: "setSemaphore",
+  // 8. 设置 AnonymousVoting 到 VotingFactory
+  m.call(votingFactory, "setAnonymousVoting", [anonymousVoting], {
+    id: "setAnonymousVoting",
   });
 
   // 9. 设置各中心的授权合约为 VotingFactory
@@ -68,6 +77,12 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
 
   m.call(votingCenter, "setRegistrationCenter", [registrationCenter], {
     id: "setRegistrationCenter",
+  });
+
+  // RegistrationCenter 与 VotingCenter 的 setAnonymousVoting 由 VotingFactory.setAnonymousVoting 内部调用传播
+
+  m.call(statisticsCenter, "setAnonymousVoting", [anonymousVoting], {
+    id: "setAnonymousVoting_statistics",
   });
 
   m.call(revealCenter, "setVotingCore", [votingFactory], {
@@ -87,6 +102,7 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     revealCenter,
     statisticsCenter,
     votingFactory,
+    anonymousVoting,
     queryCenter,
   };
 });

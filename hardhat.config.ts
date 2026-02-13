@@ -1,4 +1,5 @@
 import hardhatToolboxViemPlugin from "@nomicfoundation/hardhat-toolbox-viem";
+import "@nomicfoundation/hardhat-ethers";
 import { configVariable, defineConfig } from "hardhat/config";
 
 export default defineConfig({
@@ -13,27 +14,42 @@ export default defineConfig({
       default: {
         version: "0.8.28",
         settings: {
+          viaIR: true,
           optimizer: {
             enabled: true,
-            runs: 200,
+            runs: 1,
           },
         },
       },
       production: {
         version: "0.8.28",
         settings: {
+          viaIR: true,
           optimizer: {
             enabled: true,
-            runs: 200,
+            runs: 1,
           },
         },
       },
     },
   },
   networks: {
+    hardhat: {
+      type: "edr-simulated",
+      chainType: "l1",
+      blockGasLimit: 30_000_000,
+      allowUnlimitedContractSize: true,
+    },
+    localhost: {
+      url: "http://127.0.0.1:8545",
+      chainId: 31337,
+      blockGasLimit: 30_000_000,
+    },
     hardhatMainnet: {
       type: "edr-simulated",
       chainType: "l1",
+      blockGasLimit: 30_000_000,
+      allowUnlimitedContractSize: true,
     },
     hardhatOp: {
       type: "edr-simulated",
