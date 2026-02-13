@@ -138,6 +138,135 @@ contract VotingCenter is IVotingTypes {
     }
 
     /**
+     * @notice 匿名投票 - 不计入 voter 地址（防双投由 Semaphore nullifier 保证）
+     * @param proposalId 提案ID
+     * @param optionIndex 选项索引
+     * @return success 是否投票成功
+     */
+    function castVoteAnonymous(
+        uint256 proposalId,
+        uint256 optionIndex
+    ) external onlyVotingCore returns (bool success) {
+        require(optionIndex < optionCounts[proposalId], "Invalid option index");
+
+        voteCounts[proposalId][optionIndex] += 1;
+        totalVotes[proposalId] += 1;
+
+        voteRecords[proposalId].push(Vote({
+            voter: address(0),
+            optionIndex: optionIndex,
+            timestamp: block.timestamp,
+            isValid: true,
+            weight: 1
+        }));
+
+        emit VoteCast(proposalId, address(0), optionIndex, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 匿名加权投票 - 按权重计入票数
+     * @param proposalId 提案ID
+     * @param optionIndex 选项索引
+     * @param weight 投票权重
+     */
+    function castVoteAnonymousWeighted(
+        uint256 proposalId,
+        uint256 optionIndex,
+        uint256 weight
+    ) external onlyVotingCore returns (bool success) {
+        require(optionIndex < optionCounts[proposalId], "Invalid option index");
+        require(weight > 0, "Weight must be > 0");
+
+        voteCounts[proposalId][optionIndex] += weight;
+        totalVotes[proposalId] += weight;
+
+        voteRecords[proposalId].push(Vote({
+            voter: address(0),
+            optionIndex: optionIndex,
+            timestamp: block.timestamp,
+            isValid: true,
+            weight: weight
+        }));
+
+        emit VoteCast(proposalId, address(0), optionIndex, block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 匿名排序选择投票 - 存储排名（防双投由 Semaphore nullifier 保证）
+     * @param proposalId 提案ID
+     * @param rankedOptions 按偏好排序的选项索引数组
+     */
+    function castRankedVoteAnonymous(
+        uint256 proposalId,
+        uint256[] memory rankedOptions
+    ) external onlyVotingCore returns (bool success) {
+        uint256 numOptions = optionCounts[proposalId];
+        require(rankedOptions.length == numOptions, "Must rank all options");
+
+        bool[] memory seen = new bool[](numOptions);
+        for (uint256 i = 0; i < rankedOptions.length; i++) {
+            require(rankedOptions[i] < numOptions, "Invalid option index");
+            require(!seen[rankedOptions[i]], "Duplicate option in ranking");
+            seen[rankedOptions[i]] = true;
+        }
+
+        rankedVotes[proposalId].push(rankedOptions);
+        totalVotes[proposalId]++;
+
+        voteRecords[proposalId].push(Vote({
+            voter: address(0),
+            optionIndex: rankedOptions[0],
+            timestamp: block.timestamp,
+            isValid: true,
+            weight: 1
+        }));
+
+        emit VoteCast(proposalId, address(0), rankedOptions[0], block.timestamp);
+        return true;
+    }
+
+    /**
+     * @notice 匿名二次方投票 - 多选项分配，防双投由 Semaphore nullifier 保证
+     * @param proposalId 提案ID
+     * @param optionIndexes 有票的选项索引
+     * @param voteAmounts 对应票数
+     */
+    function castQuadraticVoteAnonymous(
+        uint256 proposalId,
+        uint256[] memory optionIndexes,
+        uint256[] memory voteAmounts
+    ) external onlyVotingCore returns (bool success) {
+        require(optionIndexes.length == voteAmounts.length, "Array length mismatch");
+        require(optionIndexes.length > 0, "Must vote for at least one option");
+
+        uint256 totalCost = 0;
+        uint256 totalVoteCount = 0;
+        for (uint256 i = 0; i < voteAmounts.length; i++) {
+            require(optionIndexes[i] < optionCounts[proposalId], "Invalid option index");
+            require(voteAmounts[i] > 0, "Vote amount must be > 0");
+            totalCost += voteAmounts[i] * voteAmounts[i];
+            totalVoteCount += voteAmounts[i];
+        }
+        require(totalCost <= 100, "Insufficient credits");
+
+        for (uint256 i = 0; i < optionIndexes.length; i++) {
+            voteCounts[proposalId][optionIndexes[i]] += voteAmounts[i];
+            voteRecords[proposalId].push(Vote({
+                voter: address(0),
+                optionIndex: optionIndexes[i],
+                timestamp: block.timestamp,
+                isValid: true,
+                weight: voteAmounts[i]
+            }));
+            emit VoteCast(proposalId, address(0), optionIndexes[i], block.timestamp);
+        }
+        totalVotes[proposalId] += totalVoteCount;
+        return true;
+    }
+
+    /**
      * @notice 提交二次方投票（多选项 + 二次方成本验证）
      * @param proposalId 提案ID
      * @param voter 投票者地址

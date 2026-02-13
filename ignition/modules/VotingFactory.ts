@@ -4,28 +4,44 @@ import { buildModule } from "@nomicfoundation/hardhat-ignition/modules";
  * 投票系统完整部署模块
  * 
  * 部署顺序:
- * 1. RegistrationCenter - 注册中心
- * 2. VotingCenter - 计票中心
- * 3. RevealCenter - 揭示中心
- * 4. StatisticsCenter - 统计中心
- * 5. VotingFactory - 工厂合约（整合上述四个中心）
- * 6. QueryCenter - 查询中心（聚合只读查询）
- * 7. 设置各中心的授权合约地址
+ * 1. SemaphoreVerifier - ZK 证明验证
+ * 2. Semaphore - 匿名群组与证明
+ * 3. RegistrationCenter - 注册中心
+ * 4. VotingCenter - 计票中心
+ * 5. RevealCenter - 揭示中心
+ * 6. StatisticsCenter - 统计中心
+ * 7. VotingFactory - 工厂合约（整合上述中心）
+ * 8. QueryCenter - 查询中心
+ * 9. 设置各中心的授权合约地址，设置 Semaphore
  */
 const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
-  // 1. 部署注册中心
+  // 1. 部署 PoseidonT3 库（Semaphore 依赖）
+  const poseidonT3 = m.library("PoseidonT3", { id: "PoseidonT3" });
+
+  // 2. 部署 Semaphore（匿名投票）
+  const semaphoreVerifier = m.contract("SemaphoreVerifier", [], {
+    id: "SemaphoreVerifier",
+  });
+  const semaphore = m.contract("Semaphore", [semaphoreVerifier], {
+    id: "Semaphore",
+    libraries: {
+      "npm/poseidon-solidity@0.0.5/PoseidonT3.sol:PoseidonT3": poseidonT3,
+    },
+  });
+
+  // 2. 部署注册中心
   const registrationCenter = m.contract("RegistrationCenter", []);
 
-  // 2. 部署计票中心
+  // 3. 部署计票中心
   const votingCenter = m.contract("VotingCenter", []);
 
-  // 3. 部署揭示中心
+  // 4. 部署揭示中心
   const revealCenter = m.contract("RevealCenter", []);
 
-  // 4. 部署统计中心
+  // 5. 部署统计中心
   const statisticsCenter = m.contract("StatisticsCenter", []);
 
-  // 5. 部署工厂合约，传入四个中心的地址
+  // 6. 部署工厂合约，传入四个中心的地址
   const votingFactory = m.contract("VotingFactory", [
     registrationCenter,
     votingCenter,
@@ -33,10 +49,15 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     statisticsCenter,
   ]);
 
-  // 6. 部署查询中心，传入工厂合约地址
+  // 7. 部署查询中心，传入工厂合约地址
   const queryCenter = m.contract("QueryCenter", [votingFactory]);
 
-  // 7. 设置各中心的授权合约为 VotingFactory
+  // 8. 设置 Semaphore 到 VotingFactory
+  m.call(votingFactory, "setSemaphore", [semaphore], {
+    id: "setSemaphore",
+  });
+
+  // 9. 设置各中心的授权合约为 VotingFactory
   m.call(registrationCenter, "setVotingCore", [votingFactory], {
     id: "setVotingCore_registration",
   });
@@ -59,6 +80,8 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
   });
 
   return {
+    semaphoreVerifier,
+    semaphore,
     registrationCenter,
     votingCenter,
     revealCenter,

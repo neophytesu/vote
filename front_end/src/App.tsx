@@ -655,8 +655,13 @@ interface ProposalCardProps {
   proposal: LocalProposal;
   wallet: WalletState;
   onRegister: (proposalId: number) => void;
+  onRegisterAnonymous?: (proposalId: number) => void;
+  onRegisterAnonymousWeighted?: (proposalId: number, groupIndex: number) => void;
   onRegisterWeighted: (proposalId: number, groupIndex: number) => void;
   onVote: (proposalId: number, optionIndex: number) => void;
+  onVoteAnonymous?: (proposalId: number, optionIndex: number) => void;
+  onVoteAnonymousRanked?: (proposalId: number, rankedOptions: number[]) => void;
+  onVoteAnonymousQuadratic?: (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => void;
   onQuadraticVote: (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => void;
   onRankedVote: (proposalId: number, rankedOptions: number[]) => void;
   onStartRegistration: (proposalId: number) => void;
@@ -845,7 +850,7 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
@@ -931,6 +936,8 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
   const canStartTallying = !proposal.autoAdvance || (timeReady && nowOrBlock > proposal.votingEnd);
 
   const timeRemaining = () => {
+    // 手动推进模式下无时间截止，不显示剩余时间
+    if (!proposal.autoAdvance) return "由创建者推进";
     if (proposal.useBlockNumber) {
       const cur = currentBlock ?? 0;
       if (currentBlock === null) return "区块模式";
@@ -1445,8 +1452,8 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
             </Button>
           )}
 
-          {/* 延长注册期 - 创建者在 Registration 状态下 且 启用动态延长 */}
-          {proposal.status === VotingState.Registration && isCreator && proposal.allowExtension !== false && onExtendRegistrationEnd && (
+          {/* 延长注册期 - 仅自动推进模式下有效；手动推进无时间截止，无需延长 */}
+          {proposal.status === VotingState.Registration && isCreator && proposal.autoAdvance && proposal.allowExtension !== false && onExtendRegistrationEnd && (
             <Button
               onClick={() => {
                 if (proposal.useBlockNumber) {
@@ -1472,8 +1479,8 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
             </Button>
           )}
 
-          {/* 延长投票期 - 创建者在 Voting 状态下 且 启用动态延长 */}
-          {proposal.status === VotingState.Voting && isCreator && proposal.allowExtension !== false && onExtendVotingEnd && (
+          {/* 延长投票期 - 仅自动推进模式下有效；手动推进无时间截止，无需延长 */}
+          {proposal.status === VotingState.Voting && isCreator && proposal.autoAdvance && proposal.allowExtension !== false && onExtendVotingEnd && (
             <Button
               onClick={() => {
                 if (proposal.useBlockNumber) {
@@ -1553,7 +1560,12 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                       <Button
                         onClick={() => {
                           if (selectedGroupIndex !== null) {
-                            onRegisterWeighted(proposal.id, selectedGroupIndex);
+                            const isAnon = proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy;
+                            if (isAnon && onRegisterAnonymousWeighted) {
+                              onRegisterAnonymousWeighted(proposal.id, selectedGroupIndex);
+                            } else {
+                              onRegisterWeighted(proposal.id, selectedGroupIndex);
+                            }
                             setShowWeightGroupDialog(false);
                           }
                         }}
@@ -1565,6 +1577,14 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                     </DialogContent>
                   </Dialog>
                 </>
+              ) : (proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy) && onRegisterAnonymous ? (
+                <Button 
+                  onClick={() => onRegisterAnonymous(proposal.id)}
+                  disabled={!wallet.isConnected || proposal.isRegistered}
+                  className="flex-1 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 disabled:opacity-50"
+                >
+                  {proposal.isRegistered ? "已注册" : "匿名注册"}
+                </Button>
               ) : (
                 <Button 
                   onClick={() => onRegister(proposal.id)}
@@ -1703,9 +1723,21 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterWeighted, onVote
                   <VoteDialog 
                     options={proposal.options}
                     votingRule={proposal.rule}
-                    onVote={(optionIndex) => onVote(proposal.id, optionIndex)}
-                    onQuadraticVote={(optionIndexes, voteAmounts) => onQuadraticVote(proposal.id, optionIndexes, voteAmounts)}
-                    onRankedVote={(rankedOptions) => onRankedVote(proposal.id, rankedOptions)}
+                    onVote={
+                      (proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy) && onVoteAnonymous
+                        ? (optionIndex) => onVoteAnonymous(proposal.id, optionIndex)
+                        : (optionIndex) => onVote(proposal.id, optionIndex)
+                    }
+                    onQuadraticVote={(optionIndexes, voteAmounts) => {
+                      const isAnon = proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy;
+                      if (isAnon && onVoteAnonymousQuadratic) onVoteAnonymousQuadratic(proposal.id, optionIndexes, voteAmounts);
+                      else onQuadraticVote(proposal.id, optionIndexes, voteAmounts);
+                    }}
+                    onRankedVote={(rankedOptions) => {
+                      const isAnon = proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy;
+                      if (isAnon && onVoteAnonymousRanked) onVoteAnonymousRanked(proposal.id, rankedOptions);
+                      else onRankedVote(proposal.id, rankedOptions);
+                    }}
                   />
                 </DialogContent>
               </Dialog>
@@ -1926,12 +1958,9 @@ function VoteDialog({ options, votingRule, onVote, onQuadraticVote, onRankedVote
   const handleSubmitVote = async () => {
     setIsSubmitting(true);
     setStep(2);
-    
-    // 模拟生成证明的过程
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
+
     if (isRanked && onRankedVote) {
-      onRankedVote(getRankedOptions());
+      await Promise.resolve(onRankedVote(getRankedOptions()));
     } else if (isQuadratic && onQuadraticVote) {
       // 收集 voteAmount > 0 的选项
       const indexes: number[] = [];
@@ -1942,10 +1971,10 @@ function VoteDialog({ options, votingRule, onVote, onQuadraticVote, onRankedVote
           amounts.push(amt);
         }
       });
-      onQuadraticVote(indexes, amounts);
+      await Promise.resolve(onQuadraticVote(indexes, amounts));
     } else {
       if (selected === null) return;
-      onVote(selected);
+      await Promise.resolve(onVote(selected));
     }
     setStep(3);
   };
@@ -2824,27 +2853,43 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                   <div className="grid grid-cols-2 gap-4">
                     {/* 投票规则 */}
                     <div className="space-y-2">
-                      <label className="text-sm text-zinc-300">投票规则</label>
+                      <label className="text-sm text-zinc-300">
+                        投票规则
+                        {(privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy) && (
+                          <span className="ml-1 text-xs text-amber-400">（匿名支持：简单多数、加权、二次方、排序选择）</span>
+                        )}
+                      </label>
                       <div className="grid grid-cols-2 gap-2">
                         {[
                           { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
                           { value: VotingRule.Weighted, label: "加权投票", desc: "为不同选民设置不同权重" },
                           { value: VotingRule.Quadratic, label: "二次方投票", desc: "100积分自由分配，投票越集中成本越高" },
                           { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序选项，逐轮淘汰最低票" },
-                        ].map((r) => (
-                          <button
-                            key={r.value}
-                            onClick={() => setRule(r.value)}
-                            className={`p-2 rounded-lg border-2 text-left transition-all ${
-                              rule === r.value
-                                ? "border-violet-500 bg-violet-500/10"
-                                : "border-zinc-800 hover:border-zinc-700"
-                            }`}
-                          >
-                            <p className="font-medium text-sm text-zinc-100">{r.label}</p>
-                            <p className="text-xs text-zinc-500">{r.desc}</p>
-                          </button>
-                        ))}
+                        ].map((r) => {
+                          const isAnonymous = privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy;
+                          const anonymousSupported = [VotingRule.SimpleMajority, VotingRule.Weighted, VotingRule.Quadratic, VotingRule.RankedChoice] as const;
+                          const disabled = isAnonymous && !(anonymousSupported as readonly number[]).includes(r.value);
+                          return (
+                            <button
+                              key={r.value}
+                              onClick={() => {
+                                if (disabled) return;
+                                setRule(r.value);
+                              }}
+                              disabled={disabled}
+                              className={`p-2 rounded-lg border-2 text-left transition-all ${
+                                rule === r.value
+                                  ? "border-violet-500 bg-violet-500/10"
+                                  : disabled
+                                    ? "border-zinc-800 bg-zinc-900/50 opacity-50 cursor-not-allowed"
+                                    : "border-zinc-800 hover:border-zinc-700"
+                              }`}
+                            >
+                              <p className="font-medium text-sm text-zinc-100">{r.label}</p>
+                              <p className="text-xs text-zinc-500">{r.desc}</p>
+                            </button>
+                          );
+                        })}
                       </div>
                     </div>
 
@@ -2918,7 +2963,14 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                         ].map((p) => (
                           <button
                             key={p.value}
-                            onClick={() => setPrivacy(p.value)}
+                            onClick={() => {
+                              setPrivacy(p.value);
+                              if (p.value === PrivacyLevel.Anonymous || p.value === PrivacyLevel.FullPrivacy) {
+                                setRule(VotingRule.SimpleMajority);
+                                setRegistrationRule(RegistrationRule.Open);
+                                setEnableWhitelist(false);
+                              }
+                            }}
                             className={`p-2 rounded-lg border-2 text-left transition-all ${
                               privacy === p.value
                                 ? "border-fuchsia-500 bg-fuchsia-500/10"
@@ -2974,30 +3026,45 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                     </div>
                   </div>
 
-                  {/* 注册规则 */}
-                  <div className="space-y-2">
-                    <label className="text-sm text-zinc-300">注册规则</label>
+                  {/* 注册规则 - 匿名投票仅支持开放注册 */}
+                  <div className={`space-y-2 ${(privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy) ? "opacity-75" : ""}`}>
+                    <label className="text-sm text-zinc-300">
+                      注册规则
+                      {(privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy) && (
+                        <span className="ml-1 text-xs text-amber-400">（匿名投票仅支持开放注册）</span>
+                      )}
+                    </label>
                     <div className="grid grid-cols-4 gap-2">
                       {[
                         { value: 0, label: "开放注册", desc: "任何人都可注册", icon: Globe },
                         { value: 1, label: "创建者审核", desc: "需创建者批准", icon: UserCheck },
                         { value: 2, label: "NFT 持有者", desc: "持有指定 NFT", icon: ImageIcon },
                         { value: 3, label: "Token 持有者", desc: "持有指定 Token", icon: Coins },
-                      ].map((r) => (
-                        <button
-                          key={r.value}
-                          onClick={() => setRegistrationRule(r.value)}
-                          className={`p-2 rounded-lg border-2 text-left transition-all ${
-                            registrationRule === r.value
-                              ? "border-cyan-500 bg-cyan-500/10"
-                              : "border-zinc-800 hover:border-zinc-700"
-                          }`}
-                        >
-                          <r.icon className="w-4 h-4 text-zinc-300" />
-                          <p className="font-medium text-sm text-zinc-100 mt-1">{r.label}</p>
-                          <p className="text-xs text-zinc-500">{r.desc}</p>
-                        </button>
-                      ))}
+                      ].map((r) => {
+                        const isAnonymous = privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy;
+                        const disabled = isAnonymous && r.value !== RegistrationRule.Open;
+                        return (
+                          <button
+                            key={r.value}
+                            onClick={() => {
+                              if (disabled) return;
+                              setRegistrationRule(r.value);
+                            }}
+                            disabled={disabled}
+                            className={`p-2 rounded-lg border-2 text-left transition-all ${
+                              registrationRule === r.value
+                                ? "border-cyan-500 bg-cyan-500/10"
+                                : disabled
+                                  ? "border-zinc-800 bg-zinc-900/50 opacity-50 cursor-not-allowed"
+                                  : "border-zinc-800 hover:border-zinc-700"
+                            }`}
+                          >
+                            <r.icon className="w-4 h-4 text-zinc-300" />
+                            <p className="font-medium text-sm text-zinc-100 mt-1">{r.label}</p>
+                            <p className="text-xs text-zinc-500">{r.desc}</p>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -3039,7 +3106,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                     </div>
                   )}
 
-                  {/* 白名单开关与配置 - 独立于注册规则 */}
+                  {/* 白名单开关与配置 - 匿名投票不支持 */}
+                  {privacy !== PrivacyLevel.Anonymous && privacy !== PrivacyLevel.FullPrivacy && (
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <label className="text-sm text-zinc-300 flex items-center gap-2">
@@ -3062,6 +3130,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                       启用后，白名单内地址可无视注册规则参与投票
                     </p>
                   </div>
+                  )}
 
                   {/* 白名单地址导入 - 启用白名单时显示 */}
                   {enableWhitelist && (
@@ -3581,6 +3650,36 @@ function App() {
   }, [wallet.isConnected, wallet.address, statisticsCenter, refreshTrigger]);
 
   // 处理注册 - 调用真实合约（审核模式下为申请注册）
+  const handleRegisterAnonymous = useCallback(async (proposalId: number) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}`;
+    try {
+      const { Identity } = await import("@semaphore-protocol/identity");
+      let identity: InstanceType<typeof Identity>;
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        identity = Identity.import(stored);
+      } else {
+        identity = new Identity();
+        localStorage.setItem(storageKey, identity.export());
+      }
+      const commitment = identity.commitment;
+      const success = await votingFactory.registerVoterAnonymous(proposalId, commitment);
+      if (success) {
+        addToast("success", "匿名注册成功", "您已成功注册，投票时将保持匿名");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "匿名注册失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "匿名注册失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast]);
+
   const handleRegister = useCallback(async (proposalId: number) => {
     console.log("handleRegister: 点击注册, proposalId:", proposalId);
     if (!wallet.isConnected) {
@@ -3605,7 +3704,40 @@ function App() {
     } else if (votingFactory.error) {
       addToast("error", isApprovalMode ? "申请失败" : "注册失败", votingFactory.error);
     }
-  }, [wallet.isConnected, votingFactory, refreshProposals, addToast, proposals]);
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理匿名加权注册
+  const handleRegisterAnonymousWeighted = useCallback(async (proposalId: number, groupIndex: number) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}-w-${groupIndex}`;
+    const groupStorageKey = `semaphore-weight-group-${wallet.address.toLowerCase()}-${proposalId}`;
+    try {
+      const { Identity } = await import("@semaphore-protocol/identity");
+      let identity: InstanceType<typeof Identity>;
+      const stored = localStorage.getItem(storageKey);
+      if (stored) {
+        identity = Identity.import(stored);
+      } else {
+        identity = new Identity();
+        localStorage.setItem(storageKey, identity.export());
+        localStorage.setItem(groupStorageKey, String(groupIndex));
+      }
+      const commitment = identity.commitment;
+      const success = await votingFactory.registerVoterAnonymousWeighted(proposalId, commitment, groupIndex);
+      if (success) {
+        addToast("success", "匿名加权注册成功", "您已成功注册，投票时将保持匿名");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "匿名加权注册失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "匿名加权注册失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast]);
 
   // 处理加权注册 - 调用真实合约（审核模式下为申请注册）
   const handleRegisterWeighted = useCallback(async (proposalId: number, groupIndex: number) => {
@@ -3685,6 +3817,230 @@ function App() {
   const handleLoadPendingVoters = useCallback(async (proposalId: number): Promise<string[]> => {
     return await votingFactory.getPendingVoters(proposalId);
   }, [votingFactory]);
+
+  // 处理匿名投票 - 生成 ZK 证明（支持简单多数、加权）
+  const handleVoteAnonymous = useCallback(async (proposalId: number, optionIndex: number) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const isWeighted = proposal?.rule === VotingRule.Weighted;
+    const groupIndex = isWeighted ? parseInt(localStorage.getItem(`semaphore-weight-group-${wallet.address!.toLowerCase()}-${proposalId}`) ?? "-1", 10) : 0;
+    const storageKey = isWeighted
+      ? `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}-w-${groupIndex}`
+      : `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}`;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) {
+      addToast("error", "匿名投票失败", "未找到本地身份，请先完成匿名注册");
+      return;
+    }
+    if (isWeighted && (groupIndex < 0 || groupIndex >= (proposal?.weightGroupWeights.length ?? 0))) {
+      addToast("error", "匿名投票失败", "未找到加权分组信息");
+      return;
+    }
+    try {
+      addToast("info", "正在生成零知识证明...", "首次可能需下载证明文件，请稍候");
+      const { Identity } = await import("@semaphore-protocol/identity");
+      const { Group } = await import("@semaphore-protocol/group");
+      const { generateProof } = await import("@semaphore-protocol/proof");
+      const { fetchSemaphoreGroupMembers } = await import("@/utils/semaphoreGroup");
+
+      const identity = Identity.import(stored);
+      const provider = await votingFactory.getProvider();
+      const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      const groupId = isWeighted
+        ? BigInt(await votingFactory.getVotingSemaphoreGroupIdByWeight(proposalId, groupIndex))
+        : BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
+      if (groupId === 0n) {
+        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
+        return;
+      }
+
+      const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
+      if (commitments.length === 0) {
+        addToast("error", "匿名投票失败", "群组尚无成员");
+        return;
+      }
+
+      const group = new Group(commitments);
+      const scope = BigInt(proposalId);
+      const message = BigInt(optionIndex);
+      const proof = await generateProof(identity, group, message, scope);
+
+      const proofForContract = {
+        merkleTreeDepth: proof.merkleTreeDepth,
+        merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+        nullifier: BigInt(proof.nullifier),
+        message: BigInt(proof.message),
+        scope: BigInt(proof.scope),
+        points: (proof.points as string[]).map((p) => BigInt(p)),
+      };
+
+      const success = isWeighted
+        ? await votingFactory.castVoteAnonymousWeighted(proposalId, optionIndex, groupIndex, proofForContract)
+        : await votingFactory.castVoteAnonymous(proposalId, optionIndex, proofForContract);
+      if (success) {
+        addToast("success", "投票成功", "您的匿名投票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "匿名投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "匿名投票失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理匿名排序选择投票
+  const handleVoteAnonymousRanked = useCallback(async (proposalId: number, rankedOptions: number[]) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const n = proposal?.options?.length ?? 0;
+    if (n === 0 || rankedOptions.length !== n) {
+      addToast("error", "匿名排序投票失败", "排名数据无效");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}`;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) {
+      addToast("error", "匿名投票失败", "未找到本地身份，请先完成匿名注册");
+      return;
+    }
+    // 编码排名：sum(rankedOptions[i] * n^i)
+    let encoded = 0n;
+    let base = 1n;
+    for (let i = 0; i < n; i++) {
+      encoded += BigInt(rankedOptions[i]) * base;
+      base *= BigInt(n);
+    }
+    try {
+      addToast("info", "正在生成零知识证明...", "首次可能需下载证明文件，请稍候");
+      const { Identity } = await import("@semaphore-protocol/identity");
+      const { Group } = await import("@semaphore-protocol/group");
+      const { generateProof } = await import("@semaphore-protocol/proof");
+      const { fetchSemaphoreGroupMembers } = await import("@/utils/semaphoreGroup");
+
+      const identity = Identity.import(stored);
+      const provider = await votingFactory.getProvider();
+      const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
+      if (groupId === 0n) {
+        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
+        return;
+      }
+
+      const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
+      if (commitments.length === 0) {
+        addToast("error", "匿名投票失败", "群组尚无成员");
+        return;
+      }
+
+      const group = new Group(commitments);
+      const scope = BigInt(proposalId);
+      const proof = await generateProof(identity, group, encoded, scope);
+
+      const proofForContract = {
+        merkleTreeDepth: proof.merkleTreeDepth,
+        merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+        nullifier: BigInt(proof.nullifier),
+        message: BigInt(proof.message),
+        scope: BigInt(proof.scope),
+        points: (proof.points as string[]).map((p) => BigInt(p)),
+      };
+
+      const success = await votingFactory.castVoteAnonymousRanked(proposalId, encoded, proofForContract);
+      if (success) {
+        addToast("success", "投票成功", "您的匿名排序投票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "匿名排序投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "匿名排序投票失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理匿名二次方投票
+  const handleVoteAnonymousQuadratic = useCallback(async (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const n = proposal?.options?.length ?? 0;
+    if (n === 0 || n > 8) {
+      addToast("error", "匿名二次方投票失败", "选项数量无效");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}`;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) {
+      addToast("error", "匿名投票失败", "未找到本地身份，请先完成匿名注册");
+      return;
+    }
+    // 构建 votes[i]，编码为 message = sum(votes[i] << (i*4))
+    const votes = new Array<number>(n).fill(0);
+    for (let i = 0; i < optionIndexes.length; i++) {
+      if (optionIndexes[i] < n && voteAmounts[i] > 0) {
+        votes[optionIndexes[i]] = Math.min(10, voteAmounts[i]);
+      }
+    }
+    let encoded = 0n;
+    for (let i = 0; i < n; i++) {
+      encoded += BigInt(votes[i]) << BigInt(i * 4);
+    }
+    try {
+      addToast("info", "正在生成零知识证明...", "首次可能需下载证明文件，请稍候");
+      const { Identity } = await import("@semaphore-protocol/identity");
+      const { Group } = await import("@semaphore-protocol/group");
+      const { generateProof } = await import("@semaphore-protocol/proof");
+      const { fetchSemaphoreGroupMembers } = await import("@/utils/semaphoreGroup");
+
+      const identity = Identity.import(stored);
+      const provider = await votingFactory.getProvider();
+      const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
+      if (groupId === 0n) {
+        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
+        return;
+      }
+
+      const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
+      if (commitments.length === 0) {
+        addToast("error", "匿名投票失败", "群组尚无成员");
+        return;
+      }
+
+      const group = new Group(commitments);
+      const scope = BigInt(proposalId);
+      const proof = await generateProof(identity, group, encoded, scope);
+
+      const proofForContract = {
+        merkleTreeDepth: proof.merkleTreeDepth,
+        merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+        nullifier: BigInt(proof.nullifier),
+        message: BigInt(proof.message),
+        scope: BigInt(proof.scope),
+        points: (proof.points as string[]).map((p) => BigInt(p)),
+      };
+
+      const success = await votingFactory.castVoteAnonymousQuadratic(proposalId, encoded, proofForContract);
+      if (success) {
+        addToast("success", "投票成功", "您的匿名二次方投票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "匿名二次方投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "匿名二次方投票失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
 
   // 处理投票 - 调用真实合约
   const handleVote = useCallback(async (proposalId: number, optionIndex: number) => {
@@ -4068,8 +4424,13 @@ function App() {
                     proposal={proposal} 
                     wallet={wallet}
                     onRegister={handleRegister}
+                    onRegisterAnonymous={handleRegisterAnonymous}
+                    onRegisterAnonymousWeighted={handleRegisterAnonymousWeighted}
                     onRegisterWeighted={handleRegisterWeighted}
                     onVote={handleVote}
+                    onVoteAnonymous={handleVoteAnonymous}
+                    onVoteAnonymousRanked={handleVoteAnonymousRanked}
+                    onVoteAnonymousQuadratic={handleVoteAnonymousQuadratic}
                     onQuadraticVote={handleQuadraticVote}
                     onRankedVote={handleRankedVote}
                     onStartRegistration={handleStartRegistration}
@@ -4125,8 +4486,13 @@ function App() {
                         proposal={proposal} 
                         wallet={wallet}
                         onRegister={handleRegister}
+                        onRegisterAnonymous={handleRegisterAnonymous}
+                        onRegisterAnonymousWeighted={handleRegisterAnonymousWeighted}
                         onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
+                        onVoteAnonymous={handleVoteAnonymous}
+                        onVoteAnonymousRanked={handleVoteAnonymousRanked}
+                        onVoteAnonymousQuadratic={handleVoteAnonymousQuadratic}
                         onQuadraticVote={handleQuadraticVote}
                         onRankedVote={handleRankedVote}
                         onStartRegistration={handleStartRegistration}
@@ -4181,8 +4547,13 @@ function App() {
                         proposal={proposal} 
                         wallet={wallet}
                         onRegister={handleRegister}
+                        onRegisterAnonymous={handleRegisterAnonymous}
+                        onRegisterAnonymousWeighted={handleRegisterAnonymousWeighted}
                         onRegisterWeighted={handleRegisterWeighted}
                         onVote={handleVote}
+                        onVoteAnonymous={handleVoteAnonymous}
+                        onVoteAnonymousRanked={handleVoteAnonymousRanked}
+                        onVoteAnonymousQuadratic={handleVoteAnonymousQuadratic}
                         onQuadraticVote={handleQuadraticVote}
                         onRankedVote={handleRankedVote}
                         onStartRegistration={handleStartRegistration}
@@ -4322,8 +4693,13 @@ function App() {
                             proposal={proposal} 
                             wallet={wallet}
                             onRegister={handleRegister}
+                            onRegisterAnonymous={handleRegisterAnonymous}
+                            onRegisterAnonymousWeighted={handleRegisterAnonymousWeighted}
                             onRegisterWeighted={handleRegisterWeighted}
                             onVote={handleVote}
+                            onVoteAnonymous={handleVoteAnonymous}
+                            onVoteAnonymousRanked={handleVoteAnonymousRanked}
+                            onVoteAnonymousQuadratic={handleVoteAnonymousQuadratic}
                             onQuadraticVote={handleQuadraticVote}
                             onRankedVote={handleRankedVote}
                             onStartRegistration={handleStartRegistration}

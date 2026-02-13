@@ -20,5 +20,8 @@
     "hardhat": "^3.0.15",
     "typescript": "~5.8.0",
     "viem": "^2.39.0"
+  },
+  "dependencies": {
+    "@semaphore-protocol/contracts": "^4.14.2"
   }
 }

@@ -4,6 +4,11 @@ import { configVariable, defineConfig } from "hardhat/config";
 export default defineConfig({
   plugins: [hardhatToolboxViemPlugin],
   solidity: {
+    npmFilesToBuild: [
+      "@semaphore-protocol/contracts/Semaphore.sol",
+      "@semaphore-protocol/contracts/base/SemaphoreVerifier.sol",
+      "poseidon-solidity/PoseidonT3.sol",
+    ],
     profiles: {
       default: {
         version: "0.8.28",

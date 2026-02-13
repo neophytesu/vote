@@ -140,6 +140,41 @@ export function useVotingFactory(chainId: number | null) {
     return new Contract(addresses.votingFactory, VotingFactoryABI, provider);
   }, [chainId]);
 
+  // 获取 Semaphore 合约地址（用于匿名投票拉取群组数据）
+  const getSemaphoreAddress = useCallback(async (): Promise<string> => {
+    const c = await getReadOnlyContract();
+    return c.semaphore() as Promise<string>;
+  }, [getReadOnlyContract]);
+
+  // 获取投票的 Semaphore 群组 ID（简单多数/排序选择）
+  const getVotingSemaphoreGroupId = useCallback(
+    async (votingId: number): Promise<number> => {
+      const c = await getReadOnlyContract();
+      const id = await c.votingSemaphoreGroupId(votingId);
+      return Number(id);
+    },
+    [getReadOnlyContract]
+  );
+
+  // 获取加权投票的 Semaphore 群组 ID（按权重分组索引）
+  const getVotingSemaphoreGroupIdByWeight = useCallback(
+    async (votingId: number, groupIndex: number): Promise<number> => {
+      const c = await getReadOnlyContract();
+      const id = await c.votingSemaphoreGroupIdByWeight(votingId, groupIndex);
+      return Number(id);
+    },
+    [getReadOnlyContract]
+  );
+
+  // 获取 Provider（用于查询事件等）
+  const getProvider = useCallback(async () => {
+    if (!window.ethereum || !chainId) throw new Error("请先连接钱包");
+    const addresses = getContractAddresses(chainId);
+    if (addresses.votingFactory === "0x0000000000000000000000000000000000000000")
+      throw new Error("合约尚未部署到当前网络");
+    return new BrowserProvider(window.ethereum);
+  }, [chainId]);
+
   // 获取查询中心合约实例（所有只读查询走 QueryCenter）
   const getQueryContract = useCallback(async () => {
     if (!window.ethereum || !chainId) {
@@ -483,6 +518,233 @@ export function useVotingFactory(chainId: number | null) {
           ...prev,
           isLoading: false,
           error: error.message || "加权注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名投票 - 注册选民（提交身份承诺）
+   */
+  const registerVoterAnonymous = useCallback(
+    async (votingId: number, identityCommitment: bigint): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const tx = await contract.registerVoterAnonymous(votingId, identityCommitment);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名加权投票 - 注册选民（身份承诺 + 权重分组）
+   */
+  const registerVoterAnonymousWeighted = useCallback(
+    async (votingId: number, identityCommitment: bigint, groupIndex: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const tx = await contract.registerVoterAnonymousWeighted(votingId, identityCommitment, groupIndex);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名加权注册失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名投票 - 提交 ZK 证明
+   */
+  const castVoteAnonymous = useCallback(
+    async (
+      votingId: number,
+      optionIndex: number,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteAnonymous(votingId, optionIndex, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名加权投票 - 提交 ZK 证明
+   */
+  const castVoteAnonymousWeighted = useCallback(
+    async (
+      votingId: number,
+      optionIndex: number,
+      groupIndex: number,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteAnonymousWeighted(votingId, optionIndex, groupIndex, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名加权投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名排序选择投票 - 提交 ZK 证明（message = 编码排名）
+   */
+  const castVoteAnonymousRanked = useCallback(
+    async (
+      votingId: number,
+      encodedRanking: bigint,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteAnonymousRanked(votingId, encodedRanking, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名排序投票失败",
+        }));
+        return false;
+      }
+    },
+    [getContract]
+  );
+
+  /**
+   * 匿名二次方投票 - 提交 ZK 证明（message = 编码票数）
+   */
+  const castVoteAnonymousQuadratic = useCallback(
+    async (
+      votingId: number,
+      encodedVote: bigint,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteAnonymousQuadratic(votingId, encodedVote, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "匿名二次方投票失败",
         }));
         return false;
       }
@@ -1086,6 +1348,10 @@ export function useVotingFactory(chainId: number | null) {
   return {
     ...state,
     isContractDeployed,
+    getProvider,
+    getSemaphoreAddress,
+    getVotingSemaphoreGroupId,
+    getVotingSemaphoreGroupIdByWeight,
     createVoting,
     startRegistration,
     cancelVoting,
@@ -1094,6 +1360,8 @@ export function useVotingFactory(chainId: number | null) {
     getBlockNumber,
     getChainTimestamp,
     registerVoter,
+    registerVoterAnonymous,
+    registerVoterAnonymousWeighted,
     registerVoterWeighted,
     approveRegistration,
     batchApproveRegistrations,
@@ -1102,6 +1370,10 @@ export function useVotingFactory(chainId: number | null) {
     getUserFullStatus,
     startVoting,
     castVote,
+    castVoteAnonymous,
+    castVoteAnonymousWeighted,
+    castVoteAnonymousRanked,
+    castVoteAnonymousQuadratic,
     castQuadraticVote,
     castRankedVote,
     startTallying,

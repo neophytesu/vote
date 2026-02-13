@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-12T19:05:28.187Z
+ * 最后更新: 2026-02-13T14:46:13.653Z
  */
 
 export const VotingCoreABI = [
@@ -107,12 +107,18 @@ export const VotingFactoryABI = [
   "function createVoting(tuple(string title, string description, string[] options, uint8 votingRule, uint8 privacyLevel, uint256 registrationStart, uint256 registrationEnd, uint256 votingStart, uint256 votingEnd, uint256 quorum, bool autoAdvance, uint16 visibilityBitmap, bool enableWhitelist, address[] whitelist, uint256[] whitelistGroupIndexes, string[] weightGroupNames, uint256[] weightGroupWeights, uint8 registrationRule, address tokenContractAddress, uint256 tokenMinBalance, bool useBlockNumber, bool allowExtension) params) returns (uint256)",
   "function startRegistration(uint256 votingId)",
   "function registerVoter(uint256 votingId)",
+  "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
+  "function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)",
   "function registerVoterWeighted(uint256 votingId, uint256 groupIndex)",
   "function approveRegistration(uint256 votingId, address voter)",
   "function batchApproveRegistrations(uint256 votingId, address[] voters)",
   "function rejectRegistration(uint256 votingId, address voter)",
   "function startVoting(uint256 votingId)",
   "function castVote(uint256 votingId, uint256 optionIndex)",
+  "function castVoteAnonymous(uint256 votingId, uint256 optionIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castQuadraticVote(uint256 votingId, uint256[] optionIndexes, uint256[] voteAmounts)",
   "function castRankedVote(uint256 votingId, uint256[] rankedOptions)",
   "function startTallying(uint256 votingId)",
@@ -123,6 +129,9 @@ export const VotingFactoryABI = [
   
   // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
+  "function semaphore() view returns (address)",
+  "function votingSemaphoreGroupId(uint256 votingId) view returns (uint256)",
+  "function votingSemaphoreGroupIdByWeight(uint256 votingId, uint256 groupIndex) view returns (uint256)",
   "function getEffectiveState(uint256 votingId) view returns (uint8)",
   "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
 ] as const;
@@ -215,13 +224,13 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingCore: "0x5c74c94173F05dA1720953407cbb920F3DF9f887" as const,
-    votingFactory: "0x5c74c94173F05dA1720953407cbb920F3DF9f887",
-    registrationCenter: "0x86A2EE8FAf9A840F7a2c64CA3d51209F9A02081D",
-    votingCenter: "0xAA292E8611aDF267e563f334Ee42320aC96D0463",
-    revealCenter: "0xA4899D35897033b927acFCf422bc745916139776",
-    statisticsCenter: "0xf953b3A269d80e3eB0F2947630Da976B896A8C5b",
-    queryCenter: "0xe8D2A1E88c91DCd5433208d4152Cc4F399a7e91d",
+    votingCore: "0xab16A69A5a8c12C732e0DEFF4BE56A70bb64c926" as const,
+    votingFactory: "0xab16A69A5a8c12C732e0DEFF4BE56A70bb64c926",
+    registrationCenter: "0x276C216D241856199A83bf27b2286659e5b877D3",
+    votingCenter: "0xffa7CA1AEEEbBc30C874d32C7e22F052BbEa0429",
+    revealCenter: "0x3347B4d90ebe72BeFb30444C9966B2B990aE9FcB",
+    statisticsCenter: "0x5bf5b11053e734690269C6B9D438F8C9d48F528A",
+    queryCenter: "0x1f10F3Ba7ACB61b2F50B9d6DdCf91a6f787C0E82",
   },
 } as const;
 

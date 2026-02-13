@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import "./interfaces/IVotingTypes.sol";
+import "./interfaces/ISemaphoreVoting.sol";
 import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
 import "./RevealCenter.sol";
@@ -53,6 +54,9 @@ contract VotingFactory is IVotingTypes {
 
     /// @notice 投票取消事件
     event VotingCancelled(uint256 indexed votingId, address indexed cancelledBy);
+
+    /// @notice 匿名投票事件（不包含 voter 地址）
+    event AnonymousVoteCast(uint256 indexed votingId, uint256 optionIndex, uint256 nullifierHash);
 
     /// @notice 投票基本信息结构（不包含由中心合约管理的数据）
     struct VotingInfo {
@@ -151,6 +155,15 @@ contract VotingFactory is IVotingTypes {
     
     /// @notice 统计中心合约
     StatisticsCenter public statisticsCenter;
+
+    /// @notice Semaphore 合约（匿名投票）
+    ISemaphoreVoting public semaphore;
+
+    /// @notice 投票ID => Semaphore 群组ID（Anonymous 简单多数/排序选择用）
+    mapping(uint256 => uint256) public votingSemaphoreGroupId;
+
+    /// @notice 投票ID => 权重分组索引 => Semaphore 群组ID（Anonymous 加权用）
+    mapping(uint256 => mapping(uint256 => uint256)) public votingSemaphoreGroupIdByWeight;
 
     /// @notice 投票计数器
     uint256 public votingCount;
@@ -283,6 +296,15 @@ contract VotingFactory is IVotingTypes {
     }
 
     /**
+     * @notice 设置 Semaphore 合约地址（匿名投票必需，仅 owner 可设一次）
+     */
+    function setSemaphore(address _semaphore) external onlyOwner {
+        require(address(semaphore) == address(0), "Semaphore already set");
+        require(_semaphore != address(0), "Invalid address");
+        semaphore = ISemaphoreVoting(_semaphore);
+    }
+
+    /**
      * @notice 创建新投票
      * @param params 创建参数
      * @return votingId 新投票的ID
@@ -293,6 +315,19 @@ contract VotingFactory is IVotingTypes {
         require(params.registrationEnd > params.registrationStart, "Invalid registration period");
         require(params.votingEnd > params.votingStart, "Invalid voting period");
         require(params.votingStart >= params.registrationEnd, "Voting must start after registration");
+        // 匿名投票：支持简单多数、加权、排序选择、二次方；需开放注册 + 无白名单
+        if (params.privacyLevel == PrivacyLevel.Anonymous || params.privacyLevel == PrivacyLevel.FullPrivacy) {
+            require(
+                params.votingRule == VotingRule.SimpleMajority ||
+                params.votingRule == VotingRule.Weighted ||
+                params.votingRule == VotingRule.RankedChoice ||
+                params.votingRule == VotingRule.Quadratic,
+                "Anonymous supports simple majority, weighted, ranked choice, quadratic"
+            );
+            require(params.registrationRule == RegistrationRule.Open, "Anonymous voting requires open registration");
+            require(address(semaphore) != address(0), "Semaphore not configured");
+            require(!params.enableWhitelist || params.whitelist.length == 0, "Anonymous voting does not support whitelist");
+        }
 
         votingCount++;
         votingId = votingCount;
@@ -344,6 +379,21 @@ contract VotingFactory is IVotingTypes {
 
         // 初始化计票中心的选项数量
         votingCenter.initializeProposal(votingId, params.options.length);
+
+        // 匿名投票：创建 Semaphore 群组
+        if (params.privacyLevel == PrivacyLevel.Anonymous || params.privacyLevel == PrivacyLevel.FullPrivacy) {
+            if (params.votingRule == VotingRule.Weighted) {
+                // 加权：每个权重分组一个群组
+                for (uint256 i = 0; i < params.weightGroupNames.length; i++) {
+                    uint256 gid = semaphore.createGroup(address(this));
+                    votingSemaphoreGroupIdByWeight[votingId][i] = gid;
+                }
+            } else {
+                // 简单多数、排序选择、二次方：单个群组
+                uint256 groupId = semaphore.createGroup(address(this));
+                votingSemaphoreGroupId[votingId] = groupId;
+            }
+        }
 
         // 如果启用白名单，批量预注册白名单地址
         if (params.enableWhitelist && params.whitelist.length > 0) {
@@ -483,6 +533,10 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
     {
         VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel != PrivacyLevel.Anonymous && voting.privacyLevel != PrivacyLevel.FullPrivacy,
+            "Use registerVoterAnonymous for anonymous voting"
+        );
         
         // 自动推进模式：使用有效状态检查（包含时间限制）
         if (voting.autoAdvance) {
@@ -523,6 +577,86 @@ contract VotingFactory is IVotingTypes {
             statisticsCenter.recordVoterRegistered(votingId, msg.sender);
         }
 
+        emit VoterRegistered(votingId, msg.sender);
+    }
+
+    /**
+     * @notice 匿名投票 - 注册选民（简单多数/排序选择，提交 Semaphore 身份承诺）
+     * @param votingId 投票ID
+     * @param identityCommitment 身份承诺（由 @semaphore-protocol/identity 生成）
+     * @dev 仅当 privacyLevel 为 Anonymous/FullPrivacy 且 votingRule 为 SimpleMajority 或 RankedChoice 时使用
+     */
+    function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(
+            voting.votingRule == VotingRule.SimpleMajority || voting.votingRule == VotingRule.RankedChoice,
+            "Use registerVoterAnonymousWeighted for weighted"
+        );
+        uint256 groupId = votingSemaphoreGroupId[votingId];
+        require(groupId != 0, "No Semaphore group");
+
+        if (voting.autoAdvance) {
+            require(canRegister(votingId), "Registration not open");
+        } else {
+            require(voting.state == VotingState.Registration, "Invalid state");
+        }
+
+        require(!registrationCenter.isEligibleVoter(votingId, msg.sender), "Already registered");
+
+        semaphore.addMember(groupId, identityCommitment);
+        require(registrationCenter.registerVoter(votingId, msg.sender), "Registration failed");
+
+        voterParticipations[msg.sender].push(votingId);
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoterRegistered(votingId, msg.sender);
+        }
+        emit VoterRegistered(votingId, msg.sender);
+    }
+
+    /**
+     * @notice 匿名加权投票 - 注册选民（提交身份承诺 + 选择权重分组）
+     * @param votingId 投票ID
+     * @param identityCommitment 身份承诺
+     * @param groupIndex 权重分组索引
+     */
+    function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(voting.votingRule == VotingRule.Weighted, "Not weighted voting");
+        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+
+        uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
+        require(groupId != 0, "No Semaphore group for this weight tier");
+
+        if (voting.autoAdvance) {
+            require(canRegister(votingId), "Registration not open");
+        } else {
+            require(voting.state == VotingState.Registration, "Invalid state");
+        }
+
+        require(!registrationCenter.isEligibleVoter(votingId, msg.sender), "Already registered");
+
+        uint256 weight = voting.weightGroupWeights[groupIndex];
+        semaphore.addMember(groupId, identityCommitment);
+        require(registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex), "Registration failed");
+
+        voterParticipations[msg.sender].push(votingId);
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoterRegistered(votingId, msg.sender);
+        }
         emit VoterRegistered(votingId, msg.sender);
     }
 
@@ -625,6 +759,10 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
     {
         VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel != PrivacyLevel.Anonymous && voting.privacyLevel != PrivacyLevel.FullPrivacy,
+            "Use castVoteAnonymous for anonymous voting"
+        );
 
         // 排序选择和二次方投票需要使用专用函数
         require(voting.votingRule != VotingRule.RankedChoice, "Use castRankedVote for ranked choice");
@@ -657,6 +795,246 @@ contract VotingFactory is IVotingTypes {
         }
 
         emit VoteCast(votingId, msg.sender, optionIndex);
+    }
+
+    /**
+     * @notice 匿名投票 - 提交 ZK 证明
+     * @param votingId 投票ID
+     * @param optionIndex 选项索引
+     * @param proof Semaphore 证明
+     * @dev 要求 proof.message == optionIndex
+     */
+    function castVoteAnonymous(
+        uint256 votingId,
+        uint256 optionIndex,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(voting.votingRule == VotingRule.SimpleMajority, "Anonymous voting is simple majority only");
+
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        require(proof.message == optionIndex, "Proof message mismatch");
+        require(optionIndex < voting.options.length, "Invalid option index");
+
+        uint256 groupId = votingSemaphoreGroupId[votingId];
+        require(groupId != 0, "No Semaphore group");
+
+        semaphore.validateProof(groupId, proof);
+
+        bool success = votingCenter.castVoteAnonymous(votingId, optionIndex);
+        require(success, "Vote failed");
+
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        emit AnonymousVoteCast(votingId, optionIndex, proof.nullifier);
+    }
+
+    /**
+     * @notice 匿名加权投票 - 提交 ZK 证明
+     * @param votingId 投票ID
+     * @param optionIndex 选项索引
+     * @param groupIndex 权重分组索引（证明所属群组，用于确定权重）
+     * @param proof Semaphore 证明
+     */
+    function castVoteAnonymousWeighted(
+        uint256 votingId,
+        uint256 optionIndex,
+        uint256 groupIndex,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(voting.votingRule == VotingRule.Weighted, "Not weighted voting");
+
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        require(proof.message == optionIndex, "Proof message mismatch");
+        require(optionIndex < voting.options.length, "Invalid option index");
+        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+
+        uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
+        require(groupId != 0, "No Semaphore group");
+
+        semaphore.validateProof(groupId, proof);
+
+        uint256 weight = voting.weightGroupWeights[groupIndex];
+        bool success = votingCenter.castVoteAnonymousWeighted(votingId, optionIndex, weight);
+        require(success, "Vote failed");
+
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        emit AnonymousVoteCast(votingId, optionIndex, proof.nullifier);
+    }
+
+    /**
+     * @notice 匿名排序选择投票 - 提交 ZK 证明（message 为编码后的排名）
+     * @param votingId 投票ID
+     * @param encodedRanking 编码排名：sum(rankedOptions[i] * n^i)，n=选项数
+     * @param proof Semaphore 证明
+     */
+    function castVoteAnonymousRanked(
+        uint256 votingId,
+        uint256 encodedRanking,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(voting.votingRule == VotingRule.RankedChoice, "Not ranked choice");
+
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        require(proof.message == encodedRanking, "Proof message mismatch");
+
+        uint256 groupId = votingSemaphoreGroupId[votingId];
+        require(groupId != 0, "No Semaphore group");
+
+        semaphore.validateProof(groupId, proof);
+
+        // 解码排名：rankedOptions[i] = (encoded / n^i) % n
+        uint256 n = voting.options.length;
+        uint256[] memory rankedOptions = new uint256[](n);
+        uint256 enc = encodedRanking;
+        for (uint256 i = 0; i < n; i++) {
+            rankedOptions[i] = enc % n;
+            enc = enc / n;
+        }
+        // 验证为合法排列（每个选项恰好出现一次）
+        bool[] memory seen = new bool[](n);
+        for (uint256 i = 0; i < n; i++) {
+            require(rankedOptions[i] < n, "Invalid option in ranking");
+            require(!seen[rankedOptions[i]], "Duplicate in ranking");
+            seen[rankedOptions[i]] = true;
+        }
+
+        bool success = votingCenter.castRankedVoteAnonymous(votingId, rankedOptions);
+        require(success, "Vote failed");
+
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        emit AnonymousVoteCast(votingId, rankedOptions[0], proof.nullifier);
+    }
+
+    /**
+     * @notice 匿名二次方投票 - 提交 ZK 证明（message 为编码后的票数分配）
+     * @param votingId 投票ID
+     * @param encodedVote 编码：votes[i] = (encodedVote >> (i*4)) & 0xF，每选项 0-10 票，4bit
+     * @param proof Semaphore 证明
+     * @dev 二次方成本 sum(votes[i]^2) <= 100
+     */
+    function castVoteAnonymousQuadratic(
+        uint256 votingId,
+        uint256 encodedVote,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    )
+        external
+        votingExists(votingId)
+    {
+        VotingInfo storage voting = votings[votingId];
+        require(
+            voting.privacyLevel == PrivacyLevel.Anonymous || voting.privacyLevel == PrivacyLevel.FullPrivacy,
+            "Not anonymous voting"
+        );
+        require(voting.votingRule == VotingRule.Quadratic, "Not quadratic voting");
+
+        if (voting.autoAdvance) {
+            require(canVote(votingId), "Voting not open");
+        } else {
+            require(voting.state == VotingState.Voting, "Invalid state");
+        }
+
+        require(proof.message == encodedVote, "Proof message mismatch");
+
+        uint256 groupId = votingSemaphoreGroupId[votingId];
+        require(groupId != 0, "No Semaphore group");
+
+        semaphore.validateProof(groupId, proof);
+
+        (uint256[] memory optionIndexes, uint256[] memory voteAmounts, uint256 firstOption) =
+            _decodeQuadraticVote(encodedVote, voting.options.length);
+
+        bool success = votingCenter.castQuadraticVoteAnonymous(votingId, optionIndexes, voteAmounts);
+        require(success, "Vote failed");
+
+        if (address(statisticsCenter) != address(0)) {
+            statisticsCenter.recordVoteCast(votingId, msg.sender);
+        }
+
+        emit AnonymousVoteCast(votingId, firstOption, proof.nullifier);
+    }
+
+    function _decodeQuadraticVote(uint256 encodedVote, uint256 n)
+        internal
+        pure
+        returns (uint256[] memory optionIndexes, uint256[] memory voteAmounts, uint256 firstOption)
+    {
+        require(n <= 8, "Max 8 options");
+        uint256[] memory v = new uint256[](n);
+        uint256 totalCost = 0;
+        uint256 nonZero = 0;
+        bool found = false;
+        for (uint256 i = 0; i < n; i++) {
+            v[i] = (encodedVote >> (i * 4)) & 0xF;
+            require(v[i] <= 10, "Max 10 per option");
+            totalCost += v[i] * v[i];
+            if (v[i] > 0) {
+                nonZero++;
+                if (!found) {
+                    firstOption = i;
+                    found = true;
+                }
+            }
+        }
+        require(totalCost <= 100, "Exceeds budget");
+        require(nonZero > 0, "Must vote");
+
+        optionIndexes = new uint256[](nonZero);
+        voteAmounts = new uint256[](nonZero);
+        uint256 idx = 0;
+        for (uint256 i = 0; i < n; i++) {
+            if (v[i] > 0) {
+                optionIndexes[idx] = i;
+                voteAmounts[idx] = v[i];
+                idx++;
+            }
+        }
     }
 
     /**
