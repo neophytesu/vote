@@ -40,6 +40,14 @@ interface IVotingTypes {
         TokenHolder     // Token 持有者 - 持有指定 Token（预留）
     }
 
+    /// @notice 执行机制模式
+    enum ExecutionMode {
+        None,           // 链下通知 - 仅 emit 事件，链下实体执行
+        OnChainAuto,    // 链上自动执行 - 任何人可触发
+        MultiSig,       // 多签触发 - 仅多签钱包可执行
+        Timelock        // 延迟执行 - 延迟期后可执行，延迟期内可取消
+    }
+
     /// @notice 提案配置
     struct ProposalConfig {
         string title;              // 提案标题

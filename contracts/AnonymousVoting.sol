@@ -31,12 +31,14 @@ struct VotingInfo {
     uint256 tokenMinBalance;
     bool useBlockNumber;
     bool allowExtension;
+    uint256 snapshotBlockNumber;
 }
 
 interface IAnonymousVotingFactory {
     function getVotingRaw(uint256 votingId) external view returns (VotingInfo memory);
     function canRegister(uint256 votingId) external view returns (bool);
     function canVote(uint256 votingId) external view returns (bool);
+    function getSnapshotBalance(uint256 votingId, address account) external view returns (uint256);
     function recordVoterParticipation(address voter, uint256 votingId) external;
     function emitVoterRegistered(uint256 votingId, address voter) external;
     function emitAnonymousVoteCast(uint256 votingId, uint256 optionIndex, uint256 nullifierHash) external;
@@ -56,6 +58,9 @@ contract AnonymousVoting is IVotingTypes {
 
     /// @notice 匿名投票事件（不包含 voter 地址）
     event AnonymousVoteCast(uint256 indexed votingId, uint256 optionIndex, uint256 nullifierHash);
+
+    /// @notice 完全隐私加密选票事件（不暴露选民与选项，仅选票哈希与 nullifier）
+    event FullPrivacyBallotCast(uint256 indexed votingId, bytes32 ballotHash, uint256 nullifierHash);
 
     /// @notice 投票工厂合约（查询投票信息、状态、记录参与）
     address public votingFactory;
@@ -159,6 +164,13 @@ contract AnonymousVoting is IVotingTypes {
 
         _requireCanRegister(votingId, voting);
         require(!registrationCenter.isEligibleVoter(votingId, msg.sender), "Already registered");
+        if (voting.registrationRule == IVotingTypes.RegistrationRule.NFTHolder || voting.registrationRule == IVotingTypes.RegistrationRule.TokenHolder) {
+            require(voting.tokenContractAddress != address(0), "Token contract not set");
+            require(
+                IAnonymousVotingFactory(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
+                "Insufficient token balance at snapshot"
+            );
+        }
 
         semaphore.addMember(groupId, identityCommitment);
         require(registrationCenter.registerVoter(votingId, msg.sender), "Registration failed");
@@ -188,6 +200,13 @@ contract AnonymousVoting is IVotingTypes {
 
         _requireCanRegister(votingId, voting);
         require(!registrationCenter.isEligibleVoter(votingId, msg.sender), "Already registered");
+        if (voting.registrationRule == IVotingTypes.RegistrationRule.NFTHolder || voting.registrationRule == IVotingTypes.RegistrationRule.TokenHolder) {
+            require(voting.tokenContractAddress != address(0), "Token contract not set");
+            require(
+                IAnonymousVotingFactory(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
+                "Insufficient token balance at snapshot"
+            );
+        }
 
         uint256 weight = voting.weightGroupWeights[groupIndex];
         semaphore.addMember(groupId, identityCommitment);
@@ -230,6 +249,68 @@ contract AnonymousVoting is IVotingTypes {
             IAnonymousStatisticsCenter(statisticsCenter).recordVoteCast(votingId, msg.sender);
         }
         _emitAnonymousVoteCast(votingId, optionIndex, proof.nullifier);
+    }
+
+    /**
+     * @notice 完全隐私投票 - 简单多数/排序选择/二次方（单群组）
+     * @dev proof.message 须为 0，选票内容在 encryptedBallot 中由链下解密后通过 submitTallyResult 提交
+     */
+    function castVoteFullPrivacy(
+        uint256 votingId,
+        bytes calldata encryptedBallot,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    ) external {
+        VotingInfo memory voting = _getVoting(votingId);
+        require(
+            voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
+            "Full privacy only"
+        );
+        require(
+            voting.votingRule == IVotingTypes.VotingRule.SimpleMajority ||
+            voting.votingRule == IVotingTypes.VotingRule.RankedChoice ||
+            voting.votingRule == IVotingTypes.VotingRule.Quadratic,
+            "Use castVoteFullPrivacyWeighted for weighted"
+        );
+        _requireCanVote(votingId, voting);
+        require(proof.message == 0, "Proof message must be 0 for full privacy");
+        require(encryptedBallot.length > 0, "Empty ballot");
+        require(_votingHasSemaphoreGroup[votingId], "No Semaphore group");
+        uint256 groupId = votingSemaphoreGroupId[votingId];
+
+        semaphore.validateProof(groupId, proof);
+
+        votingCenter.castEncryptedBallotAnonymous(votingId);
+        bytes32 ballotHash = keccak256(encryptedBallot);
+        emit FullPrivacyBallotCast(votingId, ballotHash, proof.nullifier);
+    }
+
+    /**
+     * @notice 完全隐私加权投票 - 按权重分组验证身份后提交加密选票
+     */
+    function castVoteFullPrivacyWeighted(
+        uint256 votingId,
+        bytes calldata encryptedBallot,
+        uint256 groupIndex,
+        ISemaphoreVoting.SemaphoreProof calldata proof
+    ) external {
+        VotingInfo memory voting = _getVoting(votingId);
+        require(
+            voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
+            "Full privacy only"
+        );
+        require(voting.votingRule == IVotingTypes.VotingRule.Weighted, "Not weighted voting");
+        _requireCanVote(votingId, voting);
+        require(proof.message == 0, "Proof message must be 0 for full privacy");
+        require(encryptedBallot.length > 0, "Empty ballot");
+        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+        require(_votingWeightGroupCreated[votingId][groupIndex], "No Semaphore group for this weight");
+        uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
+
+        semaphore.validateProof(groupId, proof);
+
+        votingCenter.castEncryptedBallotAnonymous(votingId);
+        bytes32 ballotHash = keccak256(encryptedBallot);
+        emit FullPrivacyBallotCast(votingId, ballotHash, proof.nullifier);
     }
 
     /**

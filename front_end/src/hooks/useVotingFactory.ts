@@ -5,6 +5,7 @@ import {
   AnonymousVotingABI,
   QueryCenterABI,
   RegistrationCenterABI,
+  ExecutionCenterABI,
   VotingState,
   VotingRule,
   PrivacyLevel,
@@ -43,6 +44,11 @@ export interface VotingDetails {
   tokenMinBalance: number;       // 最低持有数量
   useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
   allowExtension?: boolean;     // 是否允许动态延长注册期/投票期
+  snapshotBlockNumber?: number; // 快照区块（0=当前余额）
+  useThresholdDecryption?: boolean;
+  thresholdT?: number;
+  thresholdCommittee?: string[];
+  revealDelay?: number; // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数
 }
 
 /**
@@ -71,6 +77,20 @@ export interface CreateVotingParams {
   tokenMinBalance: number;       // 最低持有数量
   useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
   allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
+  snapshotBlockNumber?: number;  // 快照区块（0=当前余额；>0 时按该区块 Token 余额计资格与权重，需 Token 支持 getPastVotes）
+  // 执行机制：0=链下通知 1=链上自动 2=多签 3=Timelock
+  executionMode?: number;
+  executionTarget?: string;      // 目标合约地址（空表示不启用）
+  executionValue?: number | bigint;  // 转账金额（wei）
+  executionCalldata?: string;    // 调用数据（hex）
+  executionOnWinningOption?: number;  // 胜出选项索引（默认 0=赞成时执行）
+  executionMultisig?: string;    // MultiSig 模式：多签钱包地址
+  executionTimelockDelay?: number;    // Timelock 模式：延迟秒数
+  // 加密/完全隐私投票可选：阈值解密（t-of-n 委员会确认计票结果）
+  useThresholdDecryption?: boolean;
+  thresholdCommittee?: string[];
+  thresholdT?: number;
+  revealDelay?: number; // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数
 }
 
 /**
@@ -248,6 +268,11 @@ export function useVotingFactory(chainId: number | null) {
       tokenMinBalance: bigint;
       useBlockNumber?: boolean;
       allowExtension?: boolean;
+      snapshotBlockNumber?: bigint;
+      useThresholdDecryption?: boolean;
+      thresholdT?: number | bigint;
+      thresholdCommittee?: string[];
+      revealDelay?: bigint;
     };
 
     return {
@@ -278,6 +303,11 @@ export function useVotingFactory(chainId: number | null) {
       tokenMinBalance: Number(d.tokenMinBalance || 0),
       useBlockNumber: d.useBlockNumber ?? false,
       allowExtension: d.allowExtension ?? true,
+      snapshotBlockNumber: d.snapshotBlockNumber != null ? Number(d.snapshotBlockNumber) : 0,
+      useThresholdDecryption: d.useThresholdDecryption ?? false,
+      thresholdT: d.thresholdT != null ? Number(d.thresholdT) : 0,
+      thresholdCommittee: d.thresholdCommittee ? [...d.thresholdCommittee] : [],
+      revealDelay: d.revealDelay != null ? Number(d.revealDelay) : 0,
     };
   };
 
@@ -318,6 +348,18 @@ export function useVotingFactory(chainId: number | null) {
           tokenMinBalance: params.tokenMinBalance || 0,
           useBlockNumber: params.useBlockNumber ?? false,
           allowExtension: params.allowExtension ?? true,
+          snapshotBlockNumber: params.snapshotBlockNumber ?? 0,
+          executionMode: params.executionMode ?? 0,
+          executionTarget: params.executionTarget || "0x0000000000000000000000000000000000000000",
+          executionValue: params.executionValue ?? 0,
+          executionCalldata: params.executionCalldata || "0x",
+          executionOnWinningOption: params.executionOnWinningOption ?? 0,
+          executionMultisig: params.executionMultisig || "0x0000000000000000000000000000000000000000",
+          executionTimelockDelay: params.executionTimelockDelay ?? 0,
+          useThresholdDecryption: params.useThresholdDecryption ?? false,
+          thresholdCommittee: params.thresholdCommittee ?? [],
+          thresholdT: params.thresholdT ?? 0,
+          revealDelay: params.revealDelay ?? 0,
         });
         
         console.log("useVotingFactory: 交易已发送, hash:", tx.hash);
@@ -1063,6 +1105,101 @@ export function useVotingFactory(chainId: number | null) {
   );
 
   /**
+   * 获取执行中心合约实例（用于提案通过后的链上执行）
+   */
+  const getExecutionContract = useCallback(async () => {
+    if (!window.ethereum || !chainId) {
+      throw new Error("请先连接钱包");
+    }
+    const addresses = getContractAddresses(chainId);
+    if (!addresses.executionCenter || addresses.executionCenter === "0x0000000000000000000000000000000000000000") {
+      throw new Error("执行中心未部署");
+    }
+    const provider = new BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    return new Contract(addresses.executionCenter, ExecutionCenterABI, signer);
+  }, [chainId]);
+
+  /**
+   * 检查提案是否可执行（传入 executor 以支持 MultiSig 模式判断当前钱包是否可执行）
+   */
+  const canExecuteProposal = useCallback(
+    async (votingId: number, executor?: string): Promise<{ canExec: boolean; reason: string }> => {
+      try {
+        if (!chainId) return { canExec: false, reason: "未连接网络" };
+        const addresses = getContractAddresses(chainId);
+        if (!addresses.executionCenter || addresses.executionCenter === "0x0000000000000000000000000000000000000000") {
+          return { canExec: false, reason: "执行中心未部署" };
+        }
+        const provider = new BrowserProvider(window.ethereum!);
+        const contract = new Contract(addresses.executionCenter, ExecutionCenterABI, provider);
+        let executorAddr = executor;
+        if (!executorAddr && window.ethereum) {
+          const signer = (await new BrowserProvider(window.ethereum).getSigner());
+          executorAddr = await signer.getAddress();
+        }
+        const [canExec, reason] = executorAddr
+          ? await contract.canExecuteFor(votingId, executorAddr)
+          : await contract.canExecute(votingId);
+        return { canExec, reason: reason || "" };
+      } catch {
+        return { canExec: false, reason: "查询失败" };
+      }
+    },
+    [chainId]
+  );
+
+  /**
+   * 取消 Timelock 执行（仅创建者在延迟期内可调用）
+   */
+  const cancelTimelockExecution = useCallback(
+    async (votingId: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getExecutionContract();
+        const tx = await contract.cancelTimelock(votingId);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "取消失败",
+        }));
+        return false;
+      }
+    },
+    [getExecutionContract]
+  );
+
+  /**
+   * 执行提案（提案通过且胜出选项匹配时，执行预定义的链上操作）
+   */
+  const executeProposal = useCallback(
+    async (votingId: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getExecutionContract();
+        const tx = await contract.execute(votingId);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "执行失败",
+        }));
+        return false;
+      }
+    },
+    [getExecutionContract]
+  );
+
+  /**
    * 揭示结果
    */
   const revealResult = useCallback(
@@ -1406,6 +1543,9 @@ export function useVotingFactory(chainId: number | null) {
     castRankedVote,
     startTallying,
     revealResult,
+    canExecuteProposal,
+    executeProposal,
+    cancelTimelockExecution,
     getVoting,
     getAllVotings,
     getRecentVotings,

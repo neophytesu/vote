@@ -21,7 +21,7 @@ import {
 import { ToastProvider, useToast } from "@/components/ui/toast";
 import { useWallet, getChainName } from "@/hooks/useWallet";
 import type { WalletState } from "@/hooks/useWallet";
-import { VotingState, VotingRule, PrivacyLevel, RegistrationRule } from "@/contracts/abi";
+import { VotingState, VotingRule, PrivacyLevel, RegistrationRule, ExecutionMode } from "@/contracts/abi";
 import {
   encodeVisibilityBitmap,
   decodeVisibilityBitmap,
@@ -84,6 +84,7 @@ interface LocalProposal {
   tokenMinBalance: number;       // 最低持有数量
   useBlockNumber?: boolean;      // 时间控制：true=用区块高度
   allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
+  snapshotBlockNumber?: number; // 快照区块（0=当前余额；>0 时按该区块余额计资格与权重）
 }
 
 // 将合约数据转换为本地提案格式
@@ -117,6 +118,7 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     tokenMinBalance: voting.tokenMinBalance || 0,
     useBlockNumber: voting.useBlockNumber ?? false,
     allowExtension: voting.allowExtension ?? true,
+    snapshotBlockNumber: voting.snapshotBlockNumber ?? 0,
   };
 }
 
@@ -668,6 +670,9 @@ interface ProposalCardProps {
   onStartVoting: (proposalId: number) => void;
   onStartTallying: (proposalId: number) => void;
   onRevealResult: (proposalId: number) => void;
+  onCanExecuteProposal?: (proposalId: number, executor?: string) => Promise<{ canExec: boolean; reason: string }>;
+  onExecuteProposal?: (proposalId: number) => Promise<boolean>;
+  onCancelTimelock?: (proposalId: number) => Promise<boolean>;
   onCancelVoting?: (proposalId: number) => void;
   onExtendRegistrationEnd?: (proposalId: number, newEnd: number) => Promise<boolean>;
   onExtendVotingEnd?: (proposalId: number, newEnd: number) => Promise<boolean>;
@@ -850,10 +855,13 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCanExecuteProposal, onExecuteProposal, onCancelTimelock, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
+  const [canExec, setCanExec] = useState<boolean | null>(null);
+  const [canExecReason, setCanExecReason] = useState("");
+  const [executeLoading, setExecuteLoading] = useState(false);
   const [showWeightGroupDialog, setShowWeightGroupDialog] = useState(false);
   const [selectedGroupIndex, setSelectedGroupIndex] = useState<number | null>(null);
   const [showPendingDialog, setShowPendingDialog] = useState(false);
@@ -891,6 +899,19 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
     const iv = setInterval(fetch, 4000);
     return () => clearInterval(iv);
   }, [proposal.useBlockNumber, getBlockNumber, getChainTimestamp, proposal.id]);
+
+  // 已完成且配置了执行时，检查是否可执行（传入钱包地址以支持 MultiSig 模式）
+  useEffect(() => {
+    if (proposal.status !== VotingState.Finalized || !onCanExecuteProposal) {
+      setCanExec(null);
+      return;
+    }
+    onCanExecuteProposal(proposal.id, wallet.address ?? undefined).then(({ canExec: ok, reason }) => {
+      setCanExec(ok);
+      setCanExecReason(reason || "");
+    });
+  }, [proposal.status, proposal.id, onCanExecuteProposal, wallet.address]);
+
   const totalVotes = proposal.voteCounts.reduce((a, b) => a + b, 0);
   const participationRate =
     proposal.totalVoters > 0
@@ -1766,7 +1787,7 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
             </Button>
           )}
 
-          {/* 已完成 - 点击弹出仅展示结果的弹窗 */}
+          {/* 已完成 - 查看结果 + 执行（若可执行） */}
           {proposal.status === VotingState.Finalized && (
             <>
               <Button
@@ -1776,6 +1797,35 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
               >
                 查看结果
               </Button>
+              {canExec === true && onExecuteProposal && (
+                <Button
+                  className="flex-1 bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 disabled:opacity-50"
+                  disabled={!wallet.isConnected || executeLoading}
+                  onClick={async () => {
+                    setExecuteLoading(true);
+                    const ok = await onExecuteProposal(proposal.id);
+                    setExecuteLoading(false);
+                    if (ok) setCanExec(false);
+                  }}
+                >
+                  {executeLoading ? "执行中..." : "执行提案"}
+                </Button>
+              )}
+              {canExec === false && canExecReason.includes("Timelock delay") && isCreator && onCancelTimelock && (
+                <Button
+                  variant="outline"
+                  className="flex-1 border-rose-500/50 text-rose-400 hover:bg-rose-500/10 disabled:opacity-50"
+                  disabled={!wallet.isConnected || executeLoading}
+                  onClick={async () => {
+                    setExecuteLoading(true);
+                    const ok = await onCancelTimelock(proposal.id);
+                    setExecuteLoading(false);
+                    if (ok) setCanExec(null);
+                  }}
+                >
+                  {executeLoading ? "取消中..." : "取消 Timelock"}
+                </Button>
+              )}
               <Dialog open={showResultDialog} onOpenChange={setShowResultDialog}>
                 <DialogContent className="bg-zinc-900 border-zinc-800 max-w-sm">
                   <DialogHeader>
@@ -2389,6 +2439,20 @@ interface CreateProposalData {
   tokenMinBalance: number;       // 最低持有数量
   useBlockNumber?: boolean;      // 时间控制：true=用区块高度，false=用时间戳
   allowExtension?: boolean;      // 是否允许动态延长注册期/投票期
+  snapshotBlockNumber?: number; // 快照区块（0=当前余额；>0 时按该区块 Token 余额计资格与权重）
+  // 执行机制
+  executionMode?: number;        // 0=链下通知 1=链上自动 2=多签 3=Timelock
+  executionTarget?: string;
+  executionValue?: number;
+  executionCalldata?: string;
+  executionOnWinningOption?: number;
+  executionMultisig?: string;
+  executionTimelockDelay?: number;
+  // 加密/完全隐私投票可选：阈值解密（t-of-n 委员会确认计票结果）
+  useThresholdDecryption?: boolean;
+  thresholdCommittee?: string[];
+  thresholdT?: number;
+  revealDelay?: number; // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数
 }
 
 interface CreateProposalCardProps {
@@ -2412,6 +2476,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [registrationRule, setRegistrationRule] = useState<number>(0); // 0=开放, 1=审核, 2=NFT, 3=Token
   const [tokenContractAddress, setTokenContractAddress] = useState(""); // NFT/Token 合约地址
   const [tokenMinBalance, setTokenMinBalance] = useState(1); // 最低持有数量
+  const [useSnapshot, setUseSnapshot] = useState(false); // 是否使用快照
+  const [snapshotBlockNumber, setSnapshotBlockNumber] = useState(0); // 快照区块（0=当前余额）
   const [enableWhitelist, setEnableWhitelist] = useState(false); // 是否启用白名单
   const [whitelist, setWhitelist] = useState<string[]>([]); // 白名单地址列表
   const [whitelistInput, setWhitelistInput] = useState(""); // 白名单输入框
@@ -2428,6 +2494,11 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [voterListVisibility, setVoterListVisibility] = useState<number>(1);
   const [resultVisibility, setResultVisibility] = useState<number>(3);
   const [progressVisibility, setProgressVisibility] = useState<number>(1);
+  // 加密投票可选：阈值解密（t-of-n 委员会）
+  const [useThresholdDecryption, setUseThresholdDecryption] = useState(false);
+  const [thresholdCommittee, setThresholdCommittee] = useState<string[]>([]);
+  const [thresholdCommitteeInput, setThresholdCommitteeInput] = useState("");
+  const [thresholdT, setThresholdT] = useState(1);
 
   // 可见性配置 - 统一定义
   const visibilityOptions = [
@@ -2451,6 +2522,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [registrationDelay, setRegistrationDelay] = useState(1);     // 注册开始延迟（分钟或区块）
   const [registrationDuration, setRegistrationDuration] = useState(5); // 注册持续时长（分钟或区块）
   const [votingDuration, setVotingDuration] = useState(60);          // 投票持续时长（分钟或区块）
+  const [revealDelay, setRevealDelay] = useState(0);                 // 结果揭示延迟（分钟或区块，0=不延迟）
   const [autoAdvance, setAutoAdvance] = useState(true);              // 推进模式：true=自动，false=手动
   const [allowExtension, setAllowExtension] = useState(true);          // 是否允许动态延长注册期/投票期
   // 具体日期模式下的四个时间点（datetime-local 格式：YYYY-MM-DDTHH:mm）
@@ -2458,6 +2530,14 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [regEndDate, setRegEndDate] = useState("");
   const [voteStartDate, setVoteStartDate] = useState("");
   const [voteEndDate, setVoteEndDate] = useState("");
+  // 执行机制
+  const [executionMode, setExecutionMode] = useState(0); // 0=None 1=OnChainAuto 2=MultiSig 3=Timelock
+  const [executionTarget, setExecutionTarget] = useState("");
+  const [executionValue, setExecutionValue] = useState("0");
+  const [executionCalldata, setExecutionCalldata] = useState("");
+  const [executionOnWinningOption, setExecutionOnWinningOption] = useState(0);
+  const [executionMultisig, setExecutionMultisig] = useState("");
+  const [executionTimelockDelay, setExecutionTimelockDelay] = useState(86400); // 默认 1 天
 
   const resetForm = () => {
     setTitle("");
@@ -2468,6 +2548,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     setRegistrationRule(0);
     setTokenContractAddress("");
     setTokenMinBalance(1);
+    setUseSnapshot(false);
+    setSnapshotBlockNumber(0);
     setEnableWhitelist(false);
     setWhitelist([]);
     setWhitelistInput("");
@@ -2484,12 +2566,24 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     setRegistrationDelay(1);
     setRegistrationDuration(5);
     setVotingDuration(60);
+    setRevealDelay(0);
     setRegStartDate("");
     setRegEndDate("");
     setVoteStartDate("");
     setVoteEndDate("");
     setAutoAdvance(true);
     setAllowExtension(true);
+    setExecutionMode(0);
+    setExecutionTarget("");
+    setExecutionValue("0");
+    setExecutionCalldata("");
+    setExecutionOnWinningOption(0);
+    setExecutionMultisig("");
+    setExecutionTimelockDelay(86400);
+    setUseThresholdDecryption(false);
+    setThresholdCommittee([]);
+    setThresholdCommitteeInput("");
+    setThresholdT(1);
     setStep(1);
   };
 
@@ -2592,6 +2686,46 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       result: resultVisibility as VisibilityLevel,
     });
 
+    if (executionMode !== ExecutionMode.None) {
+      if (!executionTarget || executionTarget.length < 40) {
+        showToast("error", "执行机制需填写目标合约地址");
+        setIsSubmitting(false);
+        return;
+      }
+      const val = parseInt(executionValue) || 0;
+      const calldata = executionCalldata.trim();
+      if (val === 0 && (!calldata || calldata === "0x")) {
+        showToast("error", "执行机制需填写调用数据或转账金额");
+        setIsSubmitting(false);
+        return;
+      }
+      if (executionMode === ExecutionMode.MultiSig && (!executionMultisig || executionMultisig.length < 40)) {
+        showToast("error", "多签模式需填写多签钱包地址");
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
+    // 加密/完全隐私且启用阈值解密：提交前解析委员会并校验
+    let finalCommittee = thresholdCommittee;
+    if ((privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption) {
+      if (thresholdCommitteeInput.trim()) {
+        const parsed = thresholdCommitteeInput.split(/[\n,;\s]+/).map((a) => a.trim()).filter((a) => a.length >= 42);
+        finalCommittee = parsed.slice(0, 50);
+      }
+      if (finalCommittee.length === 0) {
+        showToast("error", "请填写委员会成员地址", "启用阈值解密时至少需要 1 个委员会地址");
+        setIsSubmitting(false);
+        return;
+      }
+      const t = Math.max(1, Math.min(finalCommittee.length, thresholdT));
+      if (t < 1 || t > finalCommittee.length) {
+        showToast("error", "阈值 t 无效", "1 ≤ t ≤ 委员会人数");
+        setIsSubmitting(false);
+        return;
+      }
+    }
+
     const newProposal: CreateProposalData = {
       title,
       description,
@@ -2620,6 +2754,19 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       tokenMinBalance: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
         ? tokenMinBalance : 0,
       useBlockNumber: useBlockNumber || undefined,
+      snapshotBlockNumber: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
+        ? snapshotBlockNumber : 0,
+      executionMode,
+      executionTarget: executionMode !== ExecutionMode.None ? executionTarget : undefined,
+      executionValue: executionMode !== ExecutionMode.None ? parseInt(executionValue) || 0 : undefined,
+      executionCalldata: executionMode !== ExecutionMode.None ? (executionCalldata.startsWith("0x") ? executionCalldata : "0x") : undefined,
+      executionOnWinningOption,
+      executionMultisig: executionMode === ExecutionMode.MultiSig ? executionMultisig : undefined,
+      executionTimelockDelay: executionMode === ExecutionMode.Timelock ? executionTimelockDelay : undefined,
+      useThresholdDecryption: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) ? useThresholdDecryption : undefined,
+      thresholdCommittee: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption ? finalCommittee : undefined,
+      thresholdT: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption ? Math.max(1, Math.min(finalCommittee.length, thresholdT)) : undefined,
+      revealDelay: useBlockNumber ? revealDelay : revealDelay * 60,
     };
 
     console.log("开始创建投票，参数:", newProposal);
@@ -2855,9 +3002,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                     <div className="space-y-2">
                       <label className="text-sm text-zinc-300">
                         投票规则
-                        {(privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy) && (
-                          <span className="ml-1 text-xs text-amber-400">（匿名支持：简单多数、加权、二次方、排序选择）</span>
-                        )}
                       </label>
                       <div className="grid grid-cols-2 gap-2">
                         {[
@@ -2983,7 +3127,59 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                         ))}
                       </div>
                     </div>
-                  </div>
+                    </div>
+
+                    {/* 加密/完全隐私：阈值解密选项 */}
+                    {(privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && (
+                      <div className="space-y-2 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                        <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                          <Lock className="w-4 h-4" /> 阈值解密（可选）
+                        </p>
+                        <p className="text-xs text-zinc-500">
+                          启用后，计票结果需由 t-of-n 委员会成员确认后才生效，避免单点信任。
+                        </p>
+                        <label className="flex items-center gap-2 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={useThresholdDecryption}
+                            onChange={(e) => setUseThresholdDecryption(e.target.checked)}
+                            className="rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-violet-500"
+                          />
+                          <span className="text-sm text-zinc-300">使用阈值解密（委员会 t-of-n 确认）</span>
+                        </label>
+                        {useThresholdDecryption && (
+                          <div className="space-y-2 pl-6 border-l-2 border-violet-500/30">
+                            <div>
+                              <label className="text-xs text-zinc-400">委员会成员地址（每行一个，最多 50 个）</label>
+                              <textarea
+                                value={thresholdCommitteeInput}
+                                onChange={(e) => setThresholdCommitteeInput(e.target.value)}
+                                onBlur={() => {
+                                  const addrs = thresholdCommitteeInput.split(/[\n,;\s]+/).filter((a) => a.trim().length >= 42);
+                                  if (addrs.length > 0) setThresholdCommittee(addrs.slice(0, 50).map((a) => a.trim()));
+                                }}
+                                placeholder="0x..."
+                                className="mt-1 w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none min-h-[80px]"
+                              />
+                              {thresholdCommittee.length > 0 && (
+                                <p className="text-xs text-zinc-500 mt-1">已解析 {thresholdCommittee.length} 个地址</p>
+                              )}
+                            </div>
+                            <div>
+                              <label className="text-xs text-zinc-400">阈值 t（至少 t 人确认后结果生效，1 ≤ t ≤ 委员会人数）</label>
+                              <input
+                                type="number"
+                                min={1}
+                                max={Math.max(1, thresholdCommittee.length)}
+                                value={thresholdT}
+                                onChange={(e) => setThresholdT(Math.max(1, Math.min(thresholdCommittee.length || 1, parseInt(e.target.value) || 1)))}
+                                className="mt-1 w-24 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
+                              />
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                   {/* 信息公开设置 - 配置驱动 */}
                   <div className="p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
@@ -3049,6 +3245,10 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                             onClick={() => {
                               if (disabled) return;
                               setRegistrationRule(r.value);
+                              if (r.value !== RegistrationRule.NFTHolder && r.value !== RegistrationRule.TokenHolder) {
+                                setUseSnapshot(false);
+                                setSnapshotBlockNumber(0);
+                              }
                             }}
                             disabled={disabled}
                             className={`p-2 rounded-lg border-2 text-left transition-all ${
@@ -3102,6 +3302,46 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                             ? "用户至少持有该数量的 NFT 才能注册" 
                             : "用户至少持有该数量的 Token 才能注册（注意 Token 精度，如 USDT 为 6 位小数）"}
                         </p>
+                      </div>
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <label className="text-sm text-zinc-300">使用快照</label>
+                          <button
+                            onClick={() => {
+                              const next = !useSnapshot;
+                              setUseSnapshot(next);
+                              if (!next) setSnapshotBlockNumber(0);
+                            }}
+                            className={`relative w-11 h-6 rounded-full transition-colors ${
+                              useSnapshot ? "bg-cyan-500" : "bg-zinc-700"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                                useSnapshot ? "left-6" : "left-1"
+                              }`}
+                            />
+                          </button>
+                        </div>
+                        {useSnapshot && (
+                          <>
+                            <label className="text-xs text-zinc-400">快照区块号</label>
+                            <input
+                              type="number"
+                              value={snapshotBlockNumber}
+                              onChange={(e) => setSnapshotBlockNumber(Math.max(0, parseInt(e.target.value) || 0))}
+                              min={0}
+                              placeholder="例如：12345678"
+                              className="w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-cyan-500 focus:outline-none placeholder-zinc-600"
+                            />
+                            <p className="text-xs text-zinc-500">
+                              开启后将按该区块时的余额计算资格与投票权重（需 Token 支持 getPastVotes，如 ERC20Votes；NFT 通常仍是当前 balanceOf）
+                            </p>
+                          </>
+                        )}
+                        {!useSnapshot && (
+                          <p className="text-xs text-zinc-500">关闭时按当前余额计算（与不填快照等价）。</p>
+                        )}
                       </div>
                     </div>
                   )}
@@ -3327,6 +3567,100 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                     </div>
                   )}
 
+                  {/* Step 6: 执行机制 */}
+                  <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                    <p className="text-sm font-medium text-zinc-300">执行机制</p>
+                    <p className="text-xs text-zinc-500">提案通过且胜出选项匹配时，如何执行链上操作</p>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                      {[
+                        { v: ExecutionMode.None, label: "链下通知", desc: "仅事件信号" },
+                        { v: ExecutionMode.OnChainAuto, label: "链上自动", desc: "任何人可执行" },
+                        { v: ExecutionMode.MultiSig, label: "多签触发", desc: "仅多签可执行" },
+                        { v: ExecutionMode.Timelock, label: "延迟执行", desc: "延迟期+可取消" },
+                      ].map(({ v, label, desc }) => (
+                        <button
+                          key={v}
+                          onClick={() => setExecutionMode(v)}
+                          className={`p-2 rounded-lg border-2 text-left text-xs transition-all ${
+                            executionMode === v
+                              ? "border-cyan-500 bg-cyan-500/10"
+                              : "border-zinc-800 hover:border-zinc-700"
+                          }`}
+                        >
+                          <p className="font-medium text-zinc-100">{label}</p>
+                          <p className="text-zinc-500">{desc}</p>
+                        </button>
+                      ))}
+                    </div>
+                    {executionMode !== ExecutionMode.None && (
+                      <div className="space-y-3 pt-2 border-t border-zinc-700">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="text-xs text-zinc-400">目标合约</label>
+                            <input
+                              value={executionTarget}
+                              onChange={(e) => setExecutionTarget(e.target.value)}
+                              placeholder="0x..."
+                              className="w-full px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm font-mono"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-zinc-400">转账金额 (wei)</label>
+                            <input
+                              type="number"
+                              value={executionValue}
+                              onChange={(e) => setExecutionValue(e.target.value)}
+                              placeholder="0"
+                              className="w-full px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-400">调用数据 (hex)</label>
+                          <input
+                            value={executionCalldata}
+                            onChange={(e) => setExecutionCalldata(e.target.value)}
+                            placeholder="0x"
+                            className="w-full px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm font-mono"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-zinc-400">胜出选项索引（触发执行的选项，通常 0=赞成）</label>
+                          <input
+                            type="number"
+                            value={executionOnWinningOption}
+                            onChange={(e) => setExecutionOnWinningOption(Math.max(0, parseInt(e.target.value) || 0))}
+                            min={0}
+                            className="w-20 px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm"
+                          />
+                        </div>
+                        {executionMode === ExecutionMode.MultiSig && (
+                          <div>
+                            <label className="text-xs text-zinc-400">多签钱包地址</label>
+                            <input
+                              value={executionMultisig}
+                              onChange={(e) => setExecutionMultisig(e.target.value)}
+                              placeholder="0x..."
+                              className="w-full px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm font-mono"
+                            />
+                          </div>
+                        )}
+                        {executionMode === ExecutionMode.Timelock && (
+                          <div>
+                            <label className="text-xs text-zinc-400">延迟秒数（如 86400=1天）</label>
+                            <input
+                              type="number"
+                              value={executionTimelockDelay}
+                              onChange={(e) => setExecutionTimelockDelay(Math.max(1, parseInt(e.target.value) || 86400))}
+                              min={1}
+                              className="w-32 px-2 py-1.5 mt-0.5 bg-zinc-900 border border-zinc-700 rounded text-sm"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
                   {/* 时间配置 - 仅自动推进模式显示 */}
                   {autoAdvance && (
                     <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
@@ -3381,7 +3715,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
 
                       {useBlockNumber ? (
                         <>
-                          <div className="grid grid-cols-3 gap-3">
+                          <div className="grid grid-cols-4 gap-3">
                             <div className="space-y-1">
                               <label className="text-xs text-zinc-400">注册开始延迟（区块）</label>
                               <input type="number" min="1" value={registrationDelay} onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none" />
@@ -3394,10 +3728,15 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                               <label className="text-xs text-zinc-400">投票阶段时长（区块）</label>
                               <input type="number" min="1" value={votingDuration} onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none" />
                             </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">结果揭示延迟（区块）</label>
+                              <input type="number" min="0" value={revealDelay} onChange={(e) => setRevealDelay(Math.max(0, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-fuchsia-500 focus:outline-none" />
+                            </div>
                           </div>
                           <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
                             <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 当前块+{registrationDelay} 开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 区块</p>
                             <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 当前块+{registrationDelay + registrationDuration} 开始, 持续 <span className="text-violet-400">{votingDuration}</span> 区块</p>
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 揭示: 投票结束后延迟 <span className="text-fuchsia-400">{revealDelay}</span> 区块可揭示结果</p>
                           </div>
                         </>
                       ) : useSpecificDates ? (
@@ -3420,13 +3759,22 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                               <input type="datetime-local" value={voteEndDate} onChange={(e) => setVoteEndDate(e.target.value)} min={voteStartDate || undefined} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-violet-500 focus:outline-none" />
                             </div>
                           </div>
+                          <div className="grid grid-cols-2 gap-3">
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">结果揭示延迟（分钟）</label>
+                              <input type="number" min="0" value={revealDelay} onChange={(e) => setRevealDelay(Math.max(0, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 focus:border-fuchsia-500 focus:outline-none" />
+                            </div>
+                            <div className="text-xs text-zinc-500 flex items-end pb-2">
+                              投票结束后延迟 {revealDelay} 分钟才允许揭示结果
+                            </div>
+                          </div>
                           <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700">
                             <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 将上述日期转为链上时间戳提交</p>
                           </div>
                         </div>
                       ) : (
                         <>
-                          <div className="grid grid-cols-3 gap-3">
+                          <div className="grid grid-cols-4 gap-3">
                             <div className="space-y-1">
                               <label className="text-xs text-zinc-400">注册开始延迟（分钟）</label>
                               <input type="number" min="1" value={registrationDelay} onChange={(e) => setRegistrationDelay(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-amber-500 focus:outline-none" />
@@ -3439,10 +3787,15 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                               <label className="text-xs text-zinc-400">投票阶段时长（分钟）</label>
                               <input type="number" min="1" value={votingDuration} onChange={(e) => setVotingDuration(Math.max(1, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-violet-500 focus:outline-none" />
                             </div>
+                            <div className="space-y-1">
+                              <label className="text-xs text-zinc-400">结果揭示延迟（分钟）</label>
+                              <input type="number" min="0" value={revealDelay} onChange={(e) => setRevealDelay(Math.max(0, Number(e.target.value)))} className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-fuchsia-500 focus:outline-none" />
+                            </div>
                           </div>
                           <div className="text-xs text-zinc-500 pt-2 border-t border-zinc-700 space-y-1">
                             <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 注册: 创建后 {registrationDelay} 分钟开始, 持续 <span className="text-emerald-400">{registrationDuration}</span> 分钟</p>
                             <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 投票: 创建后 {registrationDelay + registrationDuration} 分钟开始, 持续 <span className="text-violet-400">{votingDuration}</span> 分钟</p>
+                            <p className="flex items-center gap-1"><Calendar className="w-3 h-3" /> 揭示: 投票结束后延迟 <span className="text-fuchsia-400">{revealDelay}</span> 分钟可揭示结果</p>
                           </div>
                         </>
                       )}
@@ -3559,7 +3912,18 @@ function App() {
   const [isLoadingProposals, setIsLoadingProposals] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  
+  const [proposalSearchKeyword, setProposalSearchKeyword] = useState("");
+
+  // 按名称、描述筛选提案（不区分大小写）- 用于各 Tab 的搜索
+  const filterProposalsByKeyword = useCallback((list: LocalProposal[]): LocalProposal[] => {
+    const k = proposalSearchKeyword.trim().toLowerCase();
+    if (!k) return list;
+    return list.filter(
+      (p) =>
+        p.title.toLowerCase().includes(k) || p.description.toLowerCase().includes(k)
+    );
+  }, [proposalSearchKeyword]);
+
   // 用户统计数据（从 StatisticsCenter 获取）
   const [userStats, setUserStats] = useState<{
     votingsCreated: number;
@@ -4215,6 +4579,38 @@ function App() {
     }
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  // 取消 Timelock 执行
+  const handleCancelTimelock = useCallback(async (proposalId: number): Promise<boolean> => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return false;
+    }
+    const success = await votingFactory.cancelTimelockExecution(proposalId);
+    if (success) {
+      addToast("success", "Timelock 已取消", "延迟执行已取消");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "取消失败", votingFactory.error);
+    }
+    return success;
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
+  // 执行提案（提案通过且胜出选项匹配时）
+  const handleExecuteProposal = useCallback(async (proposalId: number): Promise<boolean> => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return false;
+    }
+    const success = await votingFactory.executeProposal(proposalId);
+    if (success) {
+      addToast("success", "执行成功", "提案已执行");
+      refreshProposals();
+    } else if (votingFactory.error) {
+      addToast("error", "执行失败", votingFactory.error);
+    }
+    return success;
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
+
   // 加载投票记录
   const handleLoadVoteRecords = useCallback(async (proposalId: number): Promise<VoteRecord[] | null> => {
     const result = await votingFactory.getVoteRecords(proposalId);
@@ -4284,6 +4680,18 @@ function App() {
       tokenMinBalance: proposalData.tokenMinBalance || 0,
       useBlockNumber: proposalData.useBlockNumber ?? false,
       allowExtension: proposalData.allowExtension ?? true,
+      snapshotBlockNumber: proposalData.snapshotBlockNumber ?? 0,
+      executionMode: proposalData.executionMode ?? ExecutionMode.None,
+      executionTarget: proposalData.executionTarget || "0x0000000000000000000000000000000000000000",
+      executionValue: proposalData.executionValue ?? 0,
+      executionCalldata: proposalData.executionCalldata || "0x",
+      executionOnWinningOption: proposalData.executionOnWinningOption ?? 0,
+      executionMultisig: proposalData.executionMultisig || "0x0000000000000000000000000000000000000000",
+      executionTimelockDelay: proposalData.executionTimelockDelay ?? 0,
+      useThresholdDecryption: proposalData.useThresholdDecryption ?? false,
+      thresholdCommittee: proposalData.thresholdCommittee ?? [],
+      thresholdT: proposalData.thresholdT ?? 0,
+      revealDelay: proposalData.revealDelay ?? 0,
     });
 
     if (votingId !== null) {
@@ -4347,27 +4755,28 @@ function App() {
               <TabsTrigger value="my" className="text-zinc-400 data-[state=active]:text-white data-[state=active]:bg-zinc-800">我的投票</TabsTrigger>
             </TabsList>
 
-            <div className="flex items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="border-zinc-700 hover:border-violet-500 text-zinc-100"
-              >
-                <svg
-                  className="w-4 h-4 mr-2"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
+            <div className="flex items-center gap-2 w-full sm:w-auto sm:min-w-[240px]">
+              <span className="sr-only">按名称或内容搜索</span>
+              <input
+                type="text"
+                value={proposalSearchKeyword}
+                onChange={(e) => setProposalSearchKeyword(e.target.value)}
+                placeholder="按名称或内容搜索..."
+                className="w-full px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none text-sm transition-colors"
+              />
+              {proposalSearchKeyword && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-zinc-400 hover:text-zinc-100 shrink-0"
+                  onClick={() => setProposalSearchKeyword("")}
+                  aria-label="清空搜索"
                 >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"
-                  />
-                </svg>
-                筛选
-              </Button>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </Button>
+              )}
             </div>
           </div>
 
@@ -4403,22 +4812,43 @@ function App() {
                 )}
 
                 {/* 空状态 */}
-                {!isLoadingProposals && !loadError && proposals.length === 0 && (
-                  <Card className="bg-zinc-900/50 border-zinc-800">
-                    <CardContent className="py-12 text-center">
-                      <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
-                        <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                        </svg>
-                      </div>
-                      <h3 className="text-lg font-semibold text-zinc-300">暂无提案</h3>
-                      <p className="text-sm text-zinc-500 mt-1">创建第一个提案开始投票吧！</p>
-                    </CardContent>
-                  </Card>
-                )}
+                {!isLoadingProposals && !loadError && (() => {
+                  const filtered = filterProposalsByKeyword(proposals);
+                  if (proposals.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
+                            <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+                            </svg>
+                          </div>
+                          <h3 className="text-lg font-semibold text-zinc-300">暂无提案</h3>
+                          <p className="text-sm text-zinc-500 mt-1">创建第一个提案开始投票吧！</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  if (filtered.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
+                            <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                          </div>
+                          <h3 className="text-lg font-semibold text-zinc-300">没有匹配的提案</h3>
+                          <p className="text-sm text-zinc-500 mt-1">尝试其他关键词或清空搜索</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  return null;
+                })()}
 
                 {/* 提案列表 */}
-                {!isLoadingProposals && !loadError && proposals.map((proposal) => (
+                {!isLoadingProposals && !loadError && filterProposalsByKeyword(proposals).map((proposal) => (
                   <ProposalCard 
                     key={proposal.id} 
                     proposal={proposal} 
@@ -4437,6 +4867,9 @@ function App() {
                     onStartVoting={handleStartVoting}
                     onStartTallying={handleStartTallying}
                     onRevealResult={handleRevealResult}
+                    onCanExecuteProposal={votingFactory.canExecuteProposal}
+                    onExecuteProposal={handleExecuteProposal}
+                    onCancelTimelock={handleCancelTimelock}
                     onCancelVoting={handleCancelVoting}
                     onExtendRegistrationEnd={handleExtendRegistrationEnd}
                     onExtendVotingEnd={handleExtendVotingEnd}
@@ -4471,16 +4904,28 @@ function App() {
                       <p className="text-zinc-400">正在加载...</p>
                     </CardContent>
                   </Card>
-                ) : proposals.filter(p => p.status === VotingState.Voting || p.status === VotingState.Registration).length === 0 ? (
-                  <Card className="bg-zinc-900/50 border-zinc-800">
-                    <CardContent className="py-12 text-center">
-                      <p className="text-zinc-500">暂无进行中的提案</p>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  proposals
-                    .filter(p => p.status === VotingState.Voting || p.status === VotingState.Registration)
-                    .map((proposal) => (
+                ) : (() => {
+                  const activeList = proposals.filter(p => p.status === VotingState.Voting || p.status === VotingState.Registration);
+                  const filtered = filterProposalsByKeyword(activeList);
+                  if (activeList.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <p className="text-zinc-500">暂无进行中的提案</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  if (filtered.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <p className="text-zinc-500">没有匹配「{proposalSearchKeyword.trim()}」的进行中提案</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  return filtered.map((proposal) => (
                       <ProposalCard 
                         key={proposal.id} 
                         proposal={proposal} 
@@ -4499,6 +4944,9 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onCanExecuteProposal={votingFactory.canExecuteProposal}
+                        onExecuteProposal={handleExecuteProposal}
+                        onCancelTimelock={handleCancelTimelock}
                         onCancelVoting={handleCancelVoting}
                         onExtendRegistrationEnd={handleExtendRegistrationEnd}
                         onExtendVotingEnd={handleExtendVotingEnd}
@@ -4512,8 +4960,8 @@ function App() {
                         onBatchApproveRegistrations={handleBatchApproveRegistrations}
                         onLoadPendingVoters={handleLoadPendingVoters}
                       />
-                    ))
-                )}
+                    ));
+                })()}
               </div>
               <div className="space-y-4">
                 <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
@@ -4532,16 +4980,28 @@ function App() {
                       <p className="text-zinc-400">正在加载...</p>
                     </CardContent>
                   </Card>
-                ) : proposals.filter(p => p.status === VotingState.Finalized || p.status === VotingState.Cancelled).length === 0 ? (
-                  <Card className="bg-zinc-900/50 border-zinc-800">
-                    <CardContent className="py-12 text-center">
-                      <p className="text-zinc-500">暂无已完成的提案</p>
-                    </CardContent>
-                  </Card>
-                ) : (
-                  proposals
-                    .filter((p) => p.status === VotingState.Finalized || p.status === VotingState.Cancelled)
-                    .map((proposal) => (
+                ) : (() => {
+                  const completedList = proposals.filter((p) => p.status === VotingState.Finalized || p.status === VotingState.Cancelled);
+                  const filtered = filterProposalsByKeyword(completedList);
+                  if (completedList.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <p className="text-zinc-500">暂无已完成的提案</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  if (filtered.length === 0) {
+                    return (
+                      <Card className="bg-zinc-900/50 border-zinc-800">
+                        <CardContent className="py-12 text-center">
+                          <p className="text-zinc-500">没有匹配「{proposalSearchKeyword.trim()}」的已完成提案</p>
+                        </CardContent>
+                      </Card>
+                    );
+                  }
+                  return filtered.map((proposal) => (
                       <ProposalCard 
                         key={proposal.id} 
                         proposal={proposal} 
@@ -4560,6 +5020,9 @@ function App() {
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
                         onRevealResult={handleRevealResult}
+                        onCanExecuteProposal={votingFactory.canExecuteProposal}
+                        onExecuteProposal={handleExecuteProposal}
+                        onCancelTimelock={handleCancelTimelock}
                         onCancelVoting={handleCancelVoting}
                         onExtendRegistrationEnd={handleExtendRegistrationEnd}
                         onExtendVotingEnd={handleExtendVotingEnd}
@@ -4573,8 +5036,8 @@ function App() {
                         onBatchApproveRegistrations={handleBatchApproveRegistrations}
                         onLoadPendingVoters={handleLoadPendingVoters}
                       />
-                    ))
-                )}
+                    ));
+                })()}
               </div>
               <div className="space-y-4">
                 <CreateProposalCard wallet={wallet} onCreateProposal={handleCreateProposal} showToast={addToast} getBlockNumber={votingFactory.getBlockNumber} />
@@ -4592,7 +5055,8 @@ function App() {
                   p.isRegistered || 
                   p.hasVoted
                 );
-                
+                const filteredMyProposals = filterProposalsByKeyword(myProposals);
+
                 return (
                   <div className="grid lg:grid-cols-3 gap-6">
                     <div className="lg:col-span-2 space-y-4">
@@ -4686,8 +5150,20 @@ function App() {
                             </p>
                           </CardContent>
                         </Card>
+                      ) : filteredMyProposals.length === 0 ? (
+                        <Card className="bg-zinc-900/50 border-zinc-800">
+                          <CardContent className="py-12 text-center">
+                            <div className="w-16 h-16 mx-auto rounded-full bg-zinc-800 flex items-center justify-center mb-4">
+                              <svg className="w-8 h-8 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                              </svg>
+                            </div>
+                            <h3 className="text-lg font-semibold text-zinc-300">没有匹配的提案</h3>
+                            <p className="text-sm text-zinc-500 mt-1">尝试其他关键词或清空搜索</p>
+                          </CardContent>
+                        </Card>
                       ) : (
-                        myProposals.map((proposal) => (
+                        filteredMyProposals.map((proposal) => (
                           <ProposalCard 
                             key={proposal.id} 
                             proposal={proposal} 
@@ -4706,6 +5182,9 @@ function App() {
                             onStartVoting={handleStartVoting}
                             onStartTallying={handleStartTallying}
                             onRevealResult={handleRevealResult}
+                            onCanExecuteProposal={votingFactory.canExecuteProposal}
+                            onExecuteProposal={handleExecuteProposal}
+                            onCancelTimelock={handleCancelTimelock}
                             onCancelVoting={handleCancelVoting}
                             onExtendRegistrationEnd={handleExtendRegistrationEnd}
                             onExtendVotingEnd={handleExtendVotingEnd}

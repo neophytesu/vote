@@ -40,7 +40,16 @@ contract VotingCenter is IVotingTypes {
 
     /// @notice 匿名投票合约地址
     address public anonymousVoting;
-    
+
+    /// @notice 加密投票合约地址
+    address public encryptedVoting;
+
+    /// @notice 提案ID => 是否已提交加密计票结果（防止重复提交）
+    mapping(uint256 => bool) public encryptedTallySubmitted;
+
+    /// @notice 提案ID => 完全隐私加密选票数（仅 Full Privacy 使用，用于校验 submitTallyResult 的 totalBallots）
+    mapping(uint256 => uint256) public encryptedBallotCount;
+
     /// @notice 注册中心地址
     address public registrationCenter;
 
@@ -71,6 +80,12 @@ contract VotingCenter is IVotingTypes {
         _;
     }
 
+    /// @notice 仅限加密投票合约调用
+    modifier onlyEncryptedVoting() {
+        require(msg.sender == encryptedVoting, "Only EncryptedVoting can call");
+        _;
+    }
+
     constructor() {}
 
     /// @notice 设置主投票合约地址
@@ -89,6 +104,62 @@ contract VotingCenter is IVotingTypes {
     function setAnonymousVoting(address _anonymousVoting) external {
         require(msg.sender == votingCore, "Only VotingCore can set");
         anonymousVoting = _anonymousVoting;
+    }
+
+    /// @notice 设置加密投票合约地址
+    function setEncryptedVoting(address _encryptedVoting) external {
+        require(msg.sender == votingCore, "Only VotingCore can set");
+        encryptedVoting = _encryptedVoting;
+    }
+
+    /**
+     * @notice 标记加密投票选民已投票（防重复投票，不写入选项票数）
+     * @param proposalId 提案ID
+     * @param voter 选民地址
+     */
+    function markEncryptedVoterVoted(uint256 proposalId, address voter)
+        external
+        onlyEncryptedVoting
+    {
+        require(!hasVoted[proposalId][voter], "Already voted");
+        hasVoted[proposalId][voter] = true;
+        voteRecords[proposalId].push(Vote({
+            voter: voter,
+            optionIndex: 0,
+            timestamp: block.timestamp,
+            isValid: true,
+            weight: 1
+        }));
+    }
+
+    /**
+     * @notice 完全隐私：记录一张加密选票（由 AnonymousVoting 在验证 Semaphore 证明后调用，不记录选民地址）
+     * @param proposalId 提案ID
+     */
+    function castEncryptedBallotAnonymous(uint256 proposalId) external onlyVotingCoreOrAnonymous {
+        encryptedBallotCount[proposalId]++;
+    }
+
+    /**
+     * @notice 写入加密投票的解密计票结果（仅加密投票/完全隐私计票阶段由 EncryptedVoting 调用）
+     * @param proposalId 提案ID
+     * @param totalBallots 加密选票总数（完全隐私时须等于 encryptedBallotCount[proposalId]）
+     * @param counts 各选项票数
+     */
+    function setTallyResultEncrypted(
+        uint256 proposalId,
+        uint256 totalBallots,
+        uint256[] calldata counts
+    ) external onlyEncryptedVoting {
+        require(!encryptedTallySubmitted[proposalId], "Tally already submitted");
+        require(counts.length == optionCounts[proposalId], "Option count mismatch");
+        uint256 ballotCount = encryptedBallotCount[proposalId];
+        require(ballotCount == 0 || ballotCount == totalBallots, "Total ballots must match cast count");
+        encryptedTallySubmitted[proposalId] = true;
+        totalVotes[proposalId] = totalBallots;
+        for (uint256 i = 0; i < counts.length; i++) {
+            voteCounts[proposalId][i] = counts[i];
+        }
     }
 
     /**

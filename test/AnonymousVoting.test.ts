@@ -101,6 +101,11 @@ const VOTING_FACTORY_ABI = [
           { name: "tokenMinBalance", type: "uint256" },
           { name: "useBlockNumber", type: "bool" },
           { name: "allowExtension", type: "bool" },
+          { name: "snapshotBlockNumber", type: "uint256" },
+          { name: "executionTarget", type: "address" },
+          { name: "executionValue", type: "uint256" },
+          { name: "executionCalldata", type: "bytes" },
+          { name: "executionOnWinningOption", type: "uint256" },
         ],
       },
     ],
@@ -142,9 +147,14 @@ const VOTING_CENTER_ABI = [
   },
 ] as const;
 
-// VotingRule.SimpleMajority=0, PrivacyLevel.Anonymous=1, RegistrationRule.Open=0
+// VotingRule: SimpleMajority=0, Weighted=1, Quadratic=2, RankedChoice=3
+// PrivacyLevel: Anonymous=1, Encrypted=2, FullPrivacy=3, RegistrationRule.Open=0
 const VOTING_RULE_SIMPLE = 0;
+const VOTING_RULE_WEIGHTED = 1;
+const VOTING_RULE_QUADRATIC = 2;
+const VOTING_RULE_RANKED = 3;
 const PRIVACY_ANONYMOUS = 1;
+const PRIVACY_FULL = 3;
 const REG_RULE_OPEN = 0;
 
 async function fetchSemaphoreCommitments(
@@ -203,6 +213,12 @@ describe("AnonymousVoting", async function () {
     votingCenter.address,
     statisticsCenter.address,
   ]);
+  const encryptedVoting = await viem.deployContract("EncryptedVoting", [
+    votingFactory.address,
+    registrationCenter.address,
+    votingCenter.address,
+    statisticsCenter.address,
+  ]);
   await viem.deployContract("QueryCenter", [votingFactory.address]);
 
   // 配置
@@ -211,9 +227,12 @@ describe("AnonymousVoting", async function () {
   await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
   const hashSetAnonymous = await votingFactory.write.setAnonymousVoting([anonymousVoting.address]);
   await publicClient.waitForTransactionReceipt({ hash: hashSetAnonymous });
+  const hashSetEncrypted = await votingFactory.write.setEncryptedVoting([encryptedVoting.address]);
+  await publicClient.waitForTransactionReceipt({ hash: hashSetEncrypted });
   await revealCenter.write.setVotingCore([votingFactory.address]);
   await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
   await statisticsCenter.write.setAnonymousVoting([anonymousVoting.address]);
+  await statisticsCenter.write.setEncryptedVoting([encryptedVoting.address]);
 
   // 使用时间戳模式，避免区块模式在 EDR 中的时序问题
   const block = await publicClient.getBlock();
@@ -246,6 +265,17 @@ describe("AnonymousVoting", async function () {
     tokenMinBalance: 0n,
     useBlockNumber: false,
     allowExtension: true,
+    snapshotBlockNumber: 0n,
+    executionMode: 0, // None
+    executionTarget: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+    executionValue: 0n,
+    executionCalldata: "0x" as `0x${string}`,
+    executionOnWinningOption: 0n,
+    executionMultisig: "0x0000000000000000000000000000000000000000" as `0x${string}`,
+    executionTimelockDelay: 0n,
+    useThresholdDecryption: false,
+    thresholdCommittee: [] as readonly `0x${string}`[],
+    thresholdT: 0,
   };
 
   const hashCreate = await votingFactory.write.createVoting([createParams]);
@@ -403,5 +433,271 @@ describe("AnonymousVoting", async function () {
       () => anonymousVoting.write.castVoteAnonymous([votingId2, 1n, p2]),
       /nullifier|InvalidProof|revert|fail/i
     );
+  });
+
+  it("应支持完全隐私投票（Full Privacy）：Semaphore 注册 + 加密选票 + 链下解密计票", async function () {
+    const blk = await publicClient.getBlock();
+    const t = Number(blk.timestamp);
+    const fullParams = {
+      ...createParams,
+      title: "完全隐私投票测试",
+      privacyLevel: PRIVACY_FULL,
+      registrationStart: BigInt(t + 60),
+      registrationEnd: BigInt(t + 180),
+      votingStart: BigInt(t + 180),
+      votingEnd: BigInt(t + 360),
+    };
+    const hashCreateFull = await votingFactory.write.createVoting([fullParams]);
+    await publicClient.waitForTransactionReceipt({ hash: hashCreateFull });
+    const votingIdFull = await votingFactory.read.votingCount();
+    assert.ok(await anonymousVoting.read.hasSemaphoreGroup([votingIdFull]), "Full privacy should have Semaphore group");
+
+    await networkHelpers.time.increase(61);
+    const id1 = new Identity("fp-voter1");
+    const id2 = new Identity("fp-voter2");
+    const deployer = walletClients[0];
+    const voter1 = walletClients[1];
+    if (!deployer || !voter1) throw new Error("Need at least 2 wallet clients");
+
+    await anonymousVoting.write.registerVoterAnonymous([votingIdFull, id1.commitment], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.registerVoterAnonymous([votingIdFull, id2.commitment], { account: voter1.account }),
+    });
+    await networkHelpers.time.increase(130);
+
+    const groupIdFull = await anonymousVoting.read.votingSemaphoreGroupId([votingIdFull]);
+    const commitmentsFull = await fetchSemaphoreCommitments(publicClient, semaphore.address, groupIdFull);
+    const groupFull = new Group(commitmentsFull);
+    const scopeFull = votingIdFull;
+    const messageZero = 0n;
+
+    const proof1 = await generateProof(id1, groupFull, messageZero, scopeFull);
+    const proof1ForContract = {
+      merkleTreeDepth: BigInt(proof1.merkleTreeDepth),
+      merkleTreeRoot: BigInt(proof1.merkleTreeRoot),
+      nullifier: BigInt(proof1.nullifier),
+      message: BigInt(proof1.message),
+      scope: BigInt(proof1.scope),
+      points: (proof1.points as string[]).map((p) => BigInt(p)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
+    };
+    const proof2 = await generateProof(id2, groupFull, messageZero, scopeFull);
+    const proof2ForContract = {
+      merkleTreeDepth: BigInt(proof2.merkleTreeDepth),
+      merkleTreeRoot: BigInt(proof2.merkleTreeRoot),
+      nullifier: BigInt(proof2.nullifier),
+      message: BigInt(proof2.message),
+      scope: BigInt(proof2.scope),
+      points: (proof2.points as string[]).map((p) => BigInt(p)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
+    };
+
+    await anonymousVoting.write.castVoteFullPrivacy(
+      [votingIdFull, "0x0100" as `0x${string}`, proof1ForContract],
+      { account: deployer.account }
+    );
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.castVoteFullPrivacy(
+        [votingIdFull, "0x0101" as `0x${string}`, proof2ForContract],
+        { account: voter1.account }
+      ),
+    });
+
+    const ballotCount = await votingCenter.read.encryptedBallotCount([votingIdFull]);
+    assert.equal(ballotCount, 2n, "应收到 2 张完全隐私选票");
+
+    await networkHelpers.time.increase(190);
+    await encryptedVoting.write.submitTallyResult([votingIdFull, 2n, [1n, 1n]], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await votingFactory.write.revealResult([votingIdFull], { account: deployer.account }),
+    });
+
+    const state = await votingFactory.read.getEffectiveState([votingIdFull]);
+    assert.equal(state, 4, "应处于 Finalized(4)");
+    const c0 = await votingCenter.read.voteCounts([votingIdFull, 0n]);
+    const c1 = await votingCenter.read.voteCounts([votingIdFull, 1n]);
+    assert.equal(c0, 1n, "选项0 应为 1 票");
+    assert.equal(c1, 1n, "选项1 应为 1 票");
+  });
+
+  /** 完全隐私：生成 message=0 的 proof 并转为合约参数 */
+  function toProofTuple(p: { merkleTreeDepth: number; merkleTreeRoot: string; nullifier: string; message: string; scope: string; points: string[] }) {
+    return {
+      merkleTreeDepth: BigInt(p.merkleTreeDepth),
+      merkleTreeRoot: BigInt(p.merkleTreeRoot),
+      nullifier: BigInt(p.nullifier),
+      message: BigInt(p.message),
+      scope: BigInt(p.scope),
+      points: (p.points as string[]).map((x) => BigInt(x)) as [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint],
+    };
+  }
+
+  it("完全隐私 - 加权（Weighted）：注册按分组 + 加密选票 + 提交解密计票", async function () {
+    const blk = await publicClient.getBlock();
+    const t = Number(blk.timestamp);
+    const deployer = walletClients[0];
+    const voter1 = walletClients[1];
+    if (!deployer || !voter1) throw new Error("Need at least 2 wallet clients");
+
+    const fullWeightedParams = {
+      ...createParams,
+      title: "完全隐私加权",
+      options: ["A", "B", "C"],
+      votingRule: VOTING_RULE_WEIGHTED,
+      privacyLevel: PRIVACY_FULL,
+      weightGroupNames: ["普通", "高级"],
+      weightGroupWeights: [1n, 3n],
+      registrationStart: BigInt(t + 60),
+      registrationEnd: BigInt(t + 180),
+      votingStart: BigInt(t + 180),
+      votingEnd: BigInt(t + 360),
+    };
+    await votingFactory.write.createVoting([fullWeightedParams]);
+    const vid = await votingFactory.read.votingCount();
+
+    await networkHelpers.time.increase(61);
+    const id1 = new Identity("fpw1");
+    const id2 = new Identity("fpw2");
+    await anonymousVoting.write.registerVoterAnonymousWeighted([vid, id1.commitment, 0n], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.registerVoterAnonymousWeighted([vid, id2.commitment, 1n], { account: voter1.account }),
+    });
+    await networkHelpers.time.increase(130);
+
+    const gid0 = await anonymousVoting.read.votingSemaphoreGroupIdByWeight([vid, 0n]);
+    const gid1 = await anonymousVoting.read.votingSemaphoreGroupIdByWeight([vid, 1n]);
+    const commitments0 = await fetchSemaphoreCommitments(publicClient, semaphore.address, gid0);
+    const commitments1 = await fetchSemaphoreCommitments(publicClient, semaphore.address, gid1);
+    const group0 = new Group(commitments0);
+    const group1 = new Group(commitments1);
+    const scope = vid;
+    const msgZero = 0n;
+
+    const proof1 = await generateProof(id1, group0, msgZero, scope);
+    const proof2 = await generateProof(id2, group1, msgZero, scope);
+    await anonymousVoting.write.castVoteFullPrivacyWeighted(
+      [vid, "0x01" as `0x${string}`, 0n, toProofTuple(proof1)],
+      { account: deployer.account }
+    );
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.castVoteFullPrivacyWeighted(
+        [vid, "0x02" as `0x${string}`, 1n, toProofTuple(proof2)],
+        { account: voter1.account }
+      ),
+    });
+
+    assert.equal(await votingCenter.read.encryptedBallotCount([vid]), 2n, "应收到 2 张加密选票");
+    await networkHelpers.time.increase(190);
+    await encryptedVoting.write.submitTallyResult([vid, 2n, [0n, 1n, 1n]], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await votingFactory.write.revealResult([vid], { account: deployer.account }),
+    });
+    assert.equal(await votingFactory.read.getEffectiveState([vid]), 4, "应 Finalized");
+  });
+
+  it("完全隐私 - 排序选择（RankedChoice）：加密选票 + 提交 IRV 最终票数", async function () {
+    const blk = await publicClient.getBlock();
+    const t = Number(blk.timestamp);
+    const deployer = walletClients[0];
+    const voter1 = walletClients[1];
+    if (!deployer || !voter1) throw new Error("Need at least 2 wallet clients");
+
+    const fullRankedParams = {
+      ...createParams,
+      title: "完全隐私排序选择",
+      options: ["X", "Y", "Z"],
+      votingRule: VOTING_RULE_RANKED,
+      privacyLevel: PRIVACY_FULL,
+      registrationStart: BigInt(t + 60),
+      registrationEnd: BigInt(t + 180),
+      votingStart: BigInt(t + 180),
+      votingEnd: BigInt(t + 360),
+    };
+    await votingFactory.write.createVoting([fullRankedParams]);
+    const vid = await votingFactory.read.votingCount();
+
+    await networkHelpers.time.increase(61);
+    const id1 = new Identity("fpr1");
+    const id2 = new Identity("fpr2");
+    await anonymousVoting.write.registerVoterAnonymous([vid, id1.commitment], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.registerVoterAnonymous([vid, id2.commitment], { account: voter1.account }),
+    });
+    await networkHelpers.time.increase(130);
+
+    const gid = await anonymousVoting.read.votingSemaphoreGroupId([vid]);
+    const commitments = await fetchSemaphoreCommitments(publicClient, semaphore.address, gid);
+    const group = new Group(commitments);
+    const scope = vid;
+    const proof1 = await generateProof(id1, group, 0n, scope);
+    const proof2 = await generateProof(id2, group, 0n, scope);
+
+    await anonymousVoting.write.castVoteFullPrivacy([vid, "0x01" as `0x${string}`, toProofTuple(proof1)], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.castVoteFullPrivacy([vid, "0x02" as `0x${string}`, toProofTuple(proof2)], { account: voter1.account }),
+    });
+
+    assert.equal(await votingCenter.read.encryptedBallotCount([vid]), 2n, "应收到 2 张加密选票");
+    await networkHelpers.time.increase(190);
+    await encryptedVoting.write.submitTallyResult([vid, 2n, [1n, 1n, 0n]], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await votingFactory.write.revealResult([vid], { account: deployer.account }),
+    });
+    assert.equal(await votingFactory.read.getEffectiveState([vid]), 4, "应 Finalized");
+  });
+
+  it("完全隐私 - 二次方（Quadratic）：加密选票 + 提交各选项汇总票数", async function () {
+    const blk = await publicClient.getBlock();
+    const t = Number(blk.timestamp);
+    const deployer = walletClients[0];
+    const voter1 = walletClients[1];
+    if (!deployer || !voter1) throw new Error("Need at least 2 wallet clients");
+
+    const fullQuadParams = {
+      ...createParams,
+      title: "完全隐私二次方",
+      options: ["P", "Q", "R"],
+      votingRule: VOTING_RULE_QUADRATIC,
+      privacyLevel: PRIVACY_FULL,
+      registrationStart: BigInt(t + 60),
+      registrationEnd: BigInt(t + 180),
+      votingStart: BigInt(t + 180),
+      votingEnd: BigInt(t + 360),
+    };
+    await votingFactory.write.createVoting([fullQuadParams]);
+    const vid = await votingFactory.read.votingCount();
+
+    await networkHelpers.time.increase(61);
+    const id1 = new Identity("fpq1");
+    const id2 = new Identity("fpq2");
+    await anonymousVoting.write.registerVoterAnonymous([vid, id1.commitment], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.registerVoterAnonymous([vid, id2.commitment], { account: voter1.account }),
+    });
+    await networkHelpers.time.increase(130);
+
+    const gid = await anonymousVoting.read.votingSemaphoreGroupId([vid]);
+    const commitments = await fetchSemaphoreCommitments(publicClient, semaphore.address, gid);
+    const group = new Group(commitments);
+    const scope = vid;
+    const proof1 = await generateProof(id1, group, 0n, scope);
+    const proof2 = await generateProof(id2, group, 0n, scope);
+
+    await anonymousVoting.write.castVoteFullPrivacy([vid, "0x01" as `0x${string}`, toProofTuple(proof1)], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await anonymousVoting.write.castVoteFullPrivacy([vid, "0x02" as `0x${string}`, toProofTuple(proof2)], { account: voter1.account }),
+    });
+
+    assert.equal(await votingCenter.read.encryptedBallotCount([vid]), 2n, "应收到 2 张加密选票");
+    await networkHelpers.time.increase(190);
+    await encryptedVoting.write.submitTallyResult([vid, 2n, [2n, 3n, 1n]], { account: deployer.account });
+    await publicClient.waitForTransactionReceipt({
+      hash: await votingFactory.write.revealResult([vid], { account: deployer.account }),
+    });
+    assert.equal(await votingFactory.read.getEffectiveState([vid]), 4, "应 Finalized");
+    const c0 = await votingCenter.read.voteCounts([vid, 0n]);
+    const c1 = await votingCenter.read.voteCounts([vid, 1n]);
+    const c2 = await votingCenter.read.voteCounts([vid, 2n]);
+    assert.equal(c0, 2n, "选项0 应为 2");
+    assert.equal(c1, 3n, "选项1 应为 3");
+    assert.equal(c2, 1n, "选项2 应为 1");
   });
 });

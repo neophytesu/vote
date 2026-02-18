@@ -79,7 +79,12 @@ contract QueryCenter is IVotingTypes {
             tokenContractAddress: info.tokenContractAddress,
             tokenMinBalance: info.tokenMinBalance,
             useBlockNumber: info.useBlockNumber,
-            allowExtension: info.allowExtension
+            allowExtension: info.allowExtension,
+            snapshotBlockNumber: info.snapshotBlockNumber,
+            useThresholdDecryption: info.useThresholdDecryption,
+            thresholdT: info.thresholdT,
+            thresholdCommittee: info.thresholdCommittee,
+            revealDelay: info.revealDelay
         });
     }
 

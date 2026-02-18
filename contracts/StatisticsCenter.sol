@@ -120,6 +120,9 @@ contract StatisticsCenter is IVotingTypes {
 
     /// @notice 匿名投票合约地址
     address public anonymousVoting;
+
+    /// @notice 加密投票合约地址
+    address public encryptedVoting;
     
     modifier onlyOwner() {
         require(msg.sender == owner, "Only owner");
@@ -128,7 +131,7 @@ contract StatisticsCenter is IVotingTypes {
     
     modifier onlyAuthorized() {
         require(
-            msg.sender == authorizedCaller || msg.sender == anonymousVoting || msg.sender == owner,
+            msg.sender == authorizedCaller || msg.sender == anonymousVoting || msg.sender == encryptedVoting || msg.sender == owner,
             "Not authorized"
         );
         _;
@@ -154,6 +157,14 @@ contract StatisticsCenter is IVotingTypes {
      */
     function setAnonymousVoting(address _anonymousVoting) external onlyOwner {
         anonymousVoting = _anonymousVoting;
+    }
+
+    /**
+     * @notice 设置加密投票合约地址
+     * @param _encryptedVoting 加密投票合约地址
+     */
+    function setEncryptedVoting(address _encryptedVoting) external onlyOwner {
+        encryptedVoting = _encryptedVoting;
     }
     
     // ==================== 统计更新函数（由 VotingFactory 调用） ====================

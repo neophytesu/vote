@@ -12,7 +12,7 @@ import "./interfaces/IVotingTypes.sol";
  * - 揭示投票结果
  * - 公布最终结果
  * - 提供结果验证
- * - 触发执行机制（简化版只记录结果）
+ * - 触发执行机制（结果记录 + ExecutionCenter 链上执行）
  */
 contract RevealCenter is IVotingTypes {
     

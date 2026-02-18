@@ -41,6 +41,9 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
   // 5. 部署统计中心
   const statisticsCenter = m.contract("StatisticsCenter", []);
 
+  // 5b. 部署执行中心（提案通过后的链上执行）
+  const executionCenter = m.contract("ExecutionCenter", []);
+
   // 6. 部署工厂合约，传入四个中心的地址
   const votingFactory = m.contract("VotingFactory", [
     registrationCenter,
@@ -89,6 +92,11 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     id: "setVotingCore_reveal",
   });
 
+  // 10. 设置执行中心（VotingFactory.setExecutionCenter 内部会设置 votingCore 和 revealCenter）
+  m.call(votingFactory, "setExecutionCenter", [executionCenter], {
+    id: "setExecutionCenter",
+  });
+
   // 设置统计中心的授权调用者
   m.call(statisticsCenter, "setAuthorizedCaller", [votingFactory], {
     id: "setAuthorizedCaller_statistics",
@@ -101,6 +109,7 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     votingCenter,
     revealCenter,
     statisticsCenter,
+    executionCenter,
     votingFactory,
     anonymousVoting,
     queryCenter,

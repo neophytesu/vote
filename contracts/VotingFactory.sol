@@ -6,6 +6,7 @@ import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
 import "./RevealCenter.sol";
 import "./StatisticsCenter.sol";
+import "./ExecutionCenter.sol";
 
 /**
  * @notice ERC-20/ERC-721 通用接口（仅 balanceOf）
@@ -16,10 +17,26 @@ interface IERC20OrNFT {
 }
 
 /**
+ * @notice 支持历史余额查询的 Token（如 EIP-5805 / OpenZeppelin ERC20Votes）
+ * @dev 快照投票时若 token 实现此接口，则使用 getPastVotes(account, snapshotBlock) 作为投票权依据
+ */
+interface IERC20SnapshotBalance {
+    function getPastVotes(address account, uint256 blockNumber) external view returns (uint256);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+/**
  * @notice 匿名投票合约接口
  */
 interface IAnonymousVoting {
     function createGroups(uint256 votingId, IVotingTypes.VotingRule votingRule, uint256 weightGroupCount) external;
+}
+
+/**
+ * @notice 加密投票合约接口
+ */
+interface IEncryptedVoting {
+    function initializeEncryptedVoting(uint256 votingId) external;
 }
 
 /**
@@ -64,6 +81,9 @@ contract VotingFactory is IVotingTypes {
     /// @notice 匿名投票事件（不包含 voter 地址）
     event AnonymousVoteCast(uint256 indexed votingId, uint256 optionIndex, uint256 nullifierHash);
 
+    /// @notice 加密投票事件（仅选票哈希）
+    event EncryptedVoteCast(uint256 indexed votingId, bytes32 ballotHash);
+
     /// @notice 投票基本信息结构（不包含由中心合约管理的数据）
     struct VotingInfo {
         uint256 id;
@@ -89,6 +109,11 @@ contract VotingFactory is IVotingTypes {
         uint256 tokenMinBalance;       // 最低持有数量（NFTHolder 默认1，TokenHolder 由创建者设定）
         bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
         bool allowExtension;          // 是否允许动态延长注册期/投票期
+        uint256 snapshotBlockNumber;   // 快照区块（0=不使用快照，用当前余额；>0 时需 token 支持 getPastVotes）
+        bool useThresholdDecryption;   // 是否使用阈值解密（仅加密/完全隐私投票）
+        uint8 thresholdT;              // 阈值 t（至少 t 人确认后计票结果才生效）
+        address[] thresholdCommittee;  // 委员会成员地址列表
+        uint256 revealDelay;           // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数；0=投票结束后即可揭示
     }
 
     /// @notice 投票详情结构（包含聚合数据）
@@ -120,6 +145,11 @@ contract VotingFactory is IVotingTypes {
         uint256 tokenMinBalance;       // 最低持有数量
         bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
         bool allowExtension;           // 是否允许动态延长注册期/投票期
+        uint256 snapshotBlockNumber;   // 快照区块（0=当前余额）
+        bool useThresholdDecryption;   // 是否使用阈值解密
+        uint8 thresholdT;              // 阈值 t
+        address[] thresholdCommittee;  // 委员会成员（由 QueryCenter 从 getThresholdCommittee 填充）
+        uint256 revealDelay;           // 结果揭示延迟（区块或秒，0=不延迟）
     }
 
     /// @notice 创建投票参数结构
@@ -146,6 +176,20 @@ contract VotingFactory is IVotingTypes {
         uint256 tokenMinBalance;       // 最低持有数量
         bool useBlockNumber;            // 时间控制：true=用区块高度，false=用时间戳
         bool allowExtension;            // 是否允许动态延长注册期/投票期
+        uint256 snapshotBlockNumber;    // 快照区块（0=当前余额；>0 时 Token 支持 getPastVotes 则按该区块余额计资格与权重）
+        // 执行机制（可选）：提案通过且指定选项获胜时执行链上操作
+        IVotingTypes.ExecutionMode executionMode;  // 0=None链下通知, 1=链上自动, 2=多签, 3=Timelock
+        address executionTarget;        // 目标合约地址（address(0) 表示不启用执行）
+        uint256 executionValue;         // 转账金额（wei）
+        bytes executionCalldata;        // 调用数据
+        uint256 executionOnWinningOption;  // 胜出选项索引（默认 0=赞成时执行）
+        address executionMultisig;      // MultiSig 模式：多签钱包地址
+        uint256 executionTimelockDelay; // Timelock 模式：延迟秒数
+        // 加密投票可选：阈值解密（t-of-n 委员会确认计票结果）
+        bool useThresholdDecryption;    // 是否使用阈值解密
+        address[] thresholdCommittee;   // 委员会成员地址列表（n）
+        uint8 thresholdT;               // 阈值 t（至少 t 人确认后结果才生效）
+        uint256 revealDelay;            // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数；0=不延迟
     }
 
     // ==================== 模块化中心合约 ====================
@@ -162,8 +206,14 @@ contract VotingFactory is IVotingTypes {
     /// @notice 统计中心合约
     StatisticsCenter public statisticsCenter;
 
+    /// @notice 执行中心合约（可选，提案通过后链上执行）
+    ExecutionCenter public executionCenter;
+
     /// @notice 匿名投票合约（Semaphore 群组与匿名注册/投票逻辑已拆分至此）
     address public anonymousVoting;
+
+    /// @notice 加密投票合约（同态加密选票提交与计票结果写入）
+    address public encryptedVoting;
 
     /// @notice 投票计数器
     uint256 public votingCount;
@@ -268,11 +318,43 @@ contract VotingFactory is IVotingTypes {
     /**
      * @notice 检查是否可以揭示结果
      * @param votingId 投票ID
-     * @return 是否可以揭示结果
+     * @return 是否可以揭示结果（处于 Tallying 且已过揭示延迟期时为 true）
      */
     function canRevealResult(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
-        return effectiveState == VotingState.Tallying;
+        if (effectiveState != VotingState.Tallying) return false;
+        VotingInfo storage voting = votings[votingId];
+        if (voting.revealDelay == 0) return true;
+        uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
+        return nowOrBlock >= voting.votingEnd + voting.revealDelay;
+    }
+
+    /**
+     * @notice 获取某地址在快照时的 Token/NFT 余额（用于资格与投票权重）
+     * @param votingId 投票ID
+     * @param account 地址
+     * @return 快照区块时的余额；若未使用快照或 token 不支持 getPastVotes 则返回当前余额
+     */
+    function getSnapshotBalance(uint256 votingId, address account) external view votingExists(votingId) returns (uint256) {
+        return _getSnapshotBalance(votings[votingId], account);
+    }
+
+    /**
+     * @notice 内部：根据投票配置与快照区块计算 account 的余额（资格/权重）
+     * @dev snapshotBlockNumber==0 或 token 无 getPastVotes 时用当前 balanceOf；否则用 getPastVotes(account, snapshotBlockNumber)
+     */
+    function _getSnapshotBalance(VotingInfo storage voting, address account) internal view returns (uint256) {
+        if (voting.tokenContractAddress == address(0)) {
+            return 0;
+        }
+        if (voting.snapshotBlockNumber == 0) {
+            return IERC20OrNFT(voting.tokenContractAddress).balanceOf(account);
+        }
+        try IERC20SnapshotBalance(voting.tokenContractAddress).getPastVotes(account, voting.snapshotBlockNumber) returns (uint256 past) {
+            return past;
+        } catch {
+            return IERC20OrNFT(voting.tokenContractAddress).balanceOf(account);
+        }
     }
 
     /**
@@ -307,6 +389,29 @@ contract VotingFactory is IVotingTypes {
         votingCenter.setAnonymousVoting(_anonymousVoting);
     }
 
+    /**
+     * @notice 设置加密投票合约地址（仅 owner 可设一次）
+     */
+    function setEncryptedVoting(address _encryptedVoting) external onlyOwner {
+        require(encryptedVoting == address(0), "EncryptedVoting already set");
+        require(_encryptedVoting != address(0), "Invalid address");
+        encryptedVoting = _encryptedVoting;
+        votingCenter.setEncryptedVoting(_encryptedVoting);
+    }
+
+    /**
+     * @notice 设置执行中心合约地址（可选，用于提案通过后的链上执行，仅可设置一次）
+     * @param _executionCenter 执行中心合约地址
+     */
+    function setExecutionCenter(address _executionCenter) external onlyOwner {
+        require(address(executionCenter) == address(0), "ExecutionCenter already set");
+        if (_executionCenter != address(0)) {
+            executionCenter = ExecutionCenter(payable(_executionCenter));
+            executionCenter.setVotingCore(address(this));
+            executionCenter.setRevealCenter(address(revealCenter));
+        }
+    }
+
     modifier onlyAnonymousVoting() {
         require(msg.sender == anonymousVoting, "Only AnonymousVoting");
         _;
@@ -333,6 +438,18 @@ contract VotingFactory is IVotingTypes {
         emit AnonymousVoteCast(votingId, optionIndex, nullifierHash);
     }
 
+    modifier onlyEncryptedVoting() {
+        require(msg.sender == encryptedVoting, "Only EncryptedVoting");
+        _;
+    }
+
+    /**
+     * @notice 发出加密投票事件（供 EncryptedVoting 调用）
+     */
+    function emitEncryptedVoteCast(uint256 votingId, bytes32 ballotHash) external onlyEncryptedVoting {
+        emit EncryptedVoteCast(votingId, ballotHash);
+    }
+
     /**
      * @notice 创建新投票
      * @param params 创建参数
@@ -356,6 +473,32 @@ contract VotingFactory is IVotingTypes {
             require(params.registrationRule == RegistrationRule.Open, "Anonymous voting requires open registration");
             require(anonymousVoting != address(0), "AnonymousVoting not configured");
             require(!params.enableWhitelist || params.whitelist.length == 0, "Anonymous voting does not support whitelist");
+        }
+        if (params.privacyLevel == PrivacyLevel.FullPrivacy) {
+            require(encryptedVoting != address(0), "Full privacy requires EncryptedVoting");
+        }
+        // 加密投票：支持简单多数、加权、排序选择、二次方；需开放注册；无白名单
+        if (params.privacyLevel == PrivacyLevel.Encrypted) {
+            require(
+                params.votingRule == VotingRule.SimpleMajority ||
+                params.votingRule == VotingRule.Weighted ||
+                params.votingRule == VotingRule.RankedChoice ||
+                params.votingRule == VotingRule.Quadratic,
+                "Encrypted supports simple majority, weighted, ranked choice, quadratic"
+            );
+            require(params.registrationRule == RegistrationRule.Open, "Encrypted voting requires open registration");
+            require(encryptedVoting != address(0), "EncryptedVoting not configured");
+            require(!params.enableWhitelist || params.whitelist.length == 0, "Encrypted voting does not support whitelist");
+            if (params.useThresholdDecryption) {
+                require(params.thresholdCommittee.length > 0, "Threshold committee cannot be empty");
+                require(params.thresholdT > 0 && params.thresholdT <= params.thresholdCommittee.length, "Invalid threshold t");
+                require(params.thresholdCommittee.length <= 50, "Committee too large");
+            }
+        }
+        if (params.privacyLevel == PrivacyLevel.FullPrivacy && params.useThresholdDecryption) {
+            require(params.thresholdCommittee.length > 0, "Threshold committee cannot be empty");
+            require(params.thresholdT > 0 && params.thresholdT <= params.thresholdCommittee.length, "Invalid threshold t");
+            require(params.thresholdCommittee.length <= 50, "Committee too large");
         }
 
         votingCount++;
@@ -381,13 +524,28 @@ contract VotingFactory is IVotingTypes {
         voting.registrationRule = params.registrationRule;
         voting.useBlockNumber = params.useBlockNumber;
         voting.allowExtension = params.allowExtension;
+        voting.revealDelay = params.revealDelay;
 
-        // NFT/Token 持有者模式：存储合约地址和最低持有量
+        // 加密/完全隐私投票可选：阈值解密（t-of-n 委员会）
+        if ((params.privacyLevel == PrivacyLevel.Encrypted || params.privacyLevel == PrivacyLevel.FullPrivacy) && params.useThresholdDecryption) {
+            voting.useThresholdDecryption = true;
+            voting.thresholdT = params.thresholdT;
+            for (uint256 i = 0; i < params.thresholdCommittee.length; i++) {
+                require(params.thresholdCommittee[i] != address(0), "Zero address in committee");
+                voting.thresholdCommittee.push(params.thresholdCommittee[i]);
+            }
+        }
+
+        // NFT/Token 持有者模式：存储合约地址、最低持有量、快照区块
         if (params.registrationRule == RegistrationRule.NFTHolder || params.registrationRule == RegistrationRule.TokenHolder) {
             require(params.tokenContractAddress != address(0), "Token contract address required");
             require(params.tokenMinBalance > 0, "Min balance must be > 0");
             voting.tokenContractAddress = params.tokenContractAddress;
             voting.tokenMinBalance = params.tokenMinBalance;
+            if (params.snapshotBlockNumber > 0) {
+                require(params.snapshotBlockNumber <= block.number, "Snapshot block must be in past");
+                voting.snapshotBlockNumber = params.snapshotBlockNumber;
+            }
         }
 
         // 加权投票：存储权重分组
@@ -415,6 +573,10 @@ contract VotingFactory is IVotingTypes {
                 ? params.weightGroupNames.length
                 : 0;
             IAnonymousVoting(anonymousVoting).createGroups(votingId, params.votingRule, weightGroupCount);
+        }
+        // 加密投票或完全隐私：委托 EncryptedVoting 初始化（完全隐私计票时用 submitTallyResult）
+        if (params.privacyLevel == PrivacyLevel.Encrypted || params.privacyLevel == PrivacyLevel.FullPrivacy) {
+            IEncryptedVoting(encryptedVoting).initializeEncryptedVoting(votingId);
         }
 
         // 如果启用白名单，批量预注册白名单地址
@@ -446,6 +608,36 @@ contract VotingFactory is IVotingTypes {
                 params.votingRule,
                 params.privacyLevel,
                 params.autoAdvance
+            );
+        }
+
+        // 执行机制：若模式为 OnChainAuto/MultiSig/Timelock 且配置了目标，则注册
+        if (
+            params.executionMode != IVotingTypes.ExecutionMode.None &&
+            params.executionTarget != address(0) &&
+            address(executionCenter) != address(0) &&
+            (params.executionCalldata.length > 0 || params.executionValue > 0)
+        ) {
+            require(
+                params.executionOnWinningOption < params.options.length,
+                "executeOnWinningOption out of range"
+            );
+            if (params.executionMode == IVotingTypes.ExecutionMode.MultiSig) {
+                require(params.executionMultisig != address(0), "MultiSig requires multisig address");
+            }
+            if (params.executionMode == IVotingTypes.ExecutionMode.Timelock) {
+                require(params.executionTimelockDelay > 0, "Timelock requires delay > 0");
+            }
+            executionCenter.setExecutionConfig(
+                votingId,
+                params.executionMode,
+                params.executionTarget,
+                params.executionValue,
+                params.executionCalldata,
+                params.executionOnWinningOption,
+                params.executionMultisig,
+                params.executionTimelockDelay,
+                msg.sender
             );
         }
 
@@ -578,18 +770,21 @@ contract VotingFactory is IVotingTypes {
             return;
         }
 
-        // NFT/Token 持有者模式：验证链上持有量
+        // NFT/Token 持有者模式：按快照余额验证资格，并按快照余额作为投票权重（1 token/NFT = 1 票）
         if (voting.registrationRule == RegistrationRule.NFTHolder || voting.registrationRule == RegistrationRule.TokenHolder) {
-            require(voting.tokenContractAddress != address(0), "Token contract not set");
-            IERC20OrNFT token = IERC20OrNFT(voting.tokenContractAddress);
-            require(token.balanceOf(msg.sender) >= voting.tokenMinBalance, "Insufficient token balance");
+            uint256 balance = _getSnapshotBalance(voting, msg.sender);
+            require(balance >= voting.tokenMinBalance, "Insufficient token balance at snapshot");
+            require(
+                registrationCenter.registerVoterWithWeight(votingId, msg.sender, balance, 0),
+                "Registration failed"
+            );
+        } else {
+            // 直接注册（开放模式）
+            require(
+                registrationCenter.registerVoter(votingId, msg.sender),
+                "Registration failed"
+            );
         }
-
-        // 直接注册（开放 / NFT / Token 模式均走此路径）
-        require(
-            registrationCenter.registerVoter(votingId, msg.sender),
-            "Registration failed"
-        );
 
         // 记录用户参与的投票
         voterParticipations[msg.sender].push(votingId);
@@ -640,18 +835,21 @@ contract VotingFactory is IVotingTypes {
             return;
         }
 
-        // NFT/Token 持有者模式：验证链上持有量
+        // NFT/Token 持有者模式：按快照余额验证资格，权重取「快照余额」与「分组权重」的较小值（或仅用快照余额，见下）
+        // 为统一快照语义：Token/NFT 模式下投票权=快照余额，忽略分组权重
         if (voting.registrationRule == RegistrationRule.NFTHolder || voting.registrationRule == RegistrationRule.TokenHolder) {
-            require(voting.tokenContractAddress != address(0), "Token contract not set");
-            IERC20OrNFT token = IERC20OrNFT(voting.tokenContractAddress);
-            require(token.balanceOf(msg.sender) >= voting.tokenMinBalance, "Insufficient token balance");
+            uint256 balance = _getSnapshotBalance(voting, msg.sender);
+            require(balance >= voting.tokenMinBalance, "Insufficient token balance at snapshot");
+            require(
+                registrationCenter.registerVoterWithWeight(votingId, msg.sender, balance, groupIndex),
+                "Registration failed"
+            );
+        } else {
+            require(
+                registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex),
+                "Registration failed"
+            );
         }
-
-        // 直接注册（开放 / NFT / Token 模式均走此路径）
-        require(
-            registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex),
-            "Registration failed"
-        );
 
         // 记录用户参与的投票
         voterParticipations[msg.sender].push(votingId);
@@ -704,6 +902,10 @@ contract VotingFactory is IVotingTypes {
         require(
             voting.privacyLevel != PrivacyLevel.Anonymous && voting.privacyLevel != PrivacyLevel.FullPrivacy,
             "Use castVoteAnonymous for anonymous voting"
+        );
+        require(
+            voting.privacyLevel != PrivacyLevel.Encrypted,
+            "Use castVoteEncrypted for encrypted voting"
         );
 
         // 排序选择和二次方投票需要使用专用函数
@@ -883,12 +1085,12 @@ contract VotingFactory is IVotingTypes {
 
         // 从计票中心获取投票结果
         uint256[] memory voteCounts;
-        if (voting.votingRule == VotingRule.RankedChoice) {
-            // 排序选择：使用 IRV 多轮淘汰算法计算最终票数
+        if (voting.votingRule == VotingRule.RankedChoice && voting.privacyLevel != PrivacyLevel.Encrypted) {
+            // 排序选择（非加密）：使用 IRV 多轮淘汰算法计算最终票数
             voteCounts = votingCenter.computeRankedResult(votingId);
-            // 将 IRV 最终票数回写到 voteCounts，使前端查询时能正确显示
             votingCenter.writeRankedResultCounts(votingId, voteCounts);
         } else {
+            // 公开/匿名/加密：直接取已聚合的票数（加密排序选择由 submitTallyResult 已写入 IRV 最终结果）
             voteCounts = votingCenter.getAllVoteCounts(votingId);
         }
         uint256 totalVoters = registrationCenter.getVoterCount(votingId);
@@ -906,6 +1108,11 @@ contract VotingFactory is IVotingTypes {
         // 更新统计中心
         if (address(statisticsCenter) != address(0)) {
             statisticsCenter.recordVotingCompleted(votingId);
+        }
+
+        // Timelock 模式：揭示后调度延迟执行
+        if (address(executionCenter) != address(0)) {
+            executionCenter.scheduleTimelockIfNeeded(votingId);
         }
 
         emit ResultRevealed(votingId, result.winningOption);
@@ -1073,5 +1280,12 @@ contract VotingFactory is IVotingTypes {
             address(revealCenter),
             address(statisticsCenter)
         );
+    }
+
+    /**
+     * @notice 获取执行中心合约地址（可选，未配置时返回 address(0)）
+     */
+    function getExecutionCenterAddress() external view returns (address) {
+        return address(executionCenter);
     }
 }
