@@ -123,6 +123,7 @@ export const VotingFactoryABI = [
   
   // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
+  "function encryptedVoting() view returns (address)",
   "function getEffectiveState(uint256 votingId) view returns (uint8)",
   "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
   "function getExecutionCenterAddress() view returns (address)",
@@ -162,6 +163,17 @@ export const AnonymousVotingABI = [
   "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacy(uint256 votingId, bytes encryptedBallot, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacyWeighted(uint256 votingId, bytes encryptedBallot, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+] as const;
+
+/**
+ * 加密投票合约 ABI
+ */
+export const EncryptedVotingABI = [
+  "function castVoteEncrypted(uint256 votingId, bytes encryptedBallot)",
+  "function submitTallyResult(uint256 votingId, uint256 totalBallots, uint256[] decryptedCounts)",
+  "function approveTallyResult(uint256 votingId)",
 ] as const;
 
 /**

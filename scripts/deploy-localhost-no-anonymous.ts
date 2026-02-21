@@ -24,51 +24,44 @@ async function main() {
 
   // 1-3. 跳过 PoseidonT3, SemaphoreVerifier, Semaphore
 
-  // 4. Centers
-  const registrationCenter = await viem.deployContract("RegistrationCenter");
+  // 4. core + Centers（构造函数注入 votingCore，避免 setVotingCore 被抢先调用）
+  const votingFactory = await viem.deployContract("VotingFactory", []);
+  console.log("VotingFactory:", votingFactory.address);
+
+  const registrationCenter = await viem.deployContract("RegistrationCenter", [votingFactory.address]);
   console.log("RegistrationCenter:", registrationCenter.address);
 
-  const votingCenter = await viem.deployContract("VotingCenter");
+  const votingCenter = await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address]);
   console.log("VotingCenter:", votingCenter.address);
 
-  const revealCenter = await viem.deployContract("RevealCenter");
+  const revealCenter = await viem.deployContract("RevealCenter", [votingFactory.address]);
   console.log("RevealCenter:", revealCenter.address);
 
-  const statisticsCenter = await viem.deployContract("StatisticsCenter");
+  const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
   console.log("StatisticsCenter:", statisticsCenter.address);
 
-  // 5. VotingFactory
-  const votingFactory = await viem.deployContract("VotingFactory", [
+  const txSetCenters = await votingFactory.write.setCenters([
     registrationCenter.address,
     votingCenter.address,
     revealCenter.address,
     statisticsCenter.address,
   ]);
-  console.log("VotingFactory:", votingFactory.address);
+  await publicClient.waitForTransactionReceipt({ hash: txSetCenters });
 
   // 6. AnonymousVotingStub（替代 AnonymousVoting，无 Semaphore 依赖）
   const anonymousVotingStub = await viem.deployContract("AnonymousVotingStub");
   console.log("AnonymousVotingStub:", anonymousVotingStub.address);
 
-  // 7. QueryCenter
-  const queryCenter = await viem.deployContract("QueryCenter", [votingFactory.address]);
-  console.log("QueryCenter:", queryCenter.address);
-
-  // 8. 配置
-  await registrationCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
+  // 7. 配置
   const txSetAnonymous = await votingFactory.write.setAnonymousVoting([anonymousVotingStub.address]);
   await publicClient.waitForTransactionReceipt({ hash: txSetAnonymous });
 
-  const txRevealCore = await revealCenter.write.setVotingCore([votingFactory.address]);
-  await publicClient.waitForTransactionReceipt({ hash: txRevealCore });
-
-  const txStatsAuth = await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
-  await publicClient.waitForTransactionReceipt({ hash: txStatsAuth });
-
   const txStatsAnonymous = await statisticsCenter.write.setAnonymousVoting([anonymousVotingStub.address]);
   await publicClient.waitForTransactionReceipt({ hash: txStatsAnonymous });
+
+  // 8. QueryCenter（需要 core 已配置中心地址）
+  const queryCenter = await viem.deployContract("QueryCenter", [votingFactory.address]);
+  console.log("QueryCenter:", queryCenter.address);
 
   console.log("\n✅ 部署完成（匿名投票已禁用）!");
 

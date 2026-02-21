@@ -12,6 +12,8 @@ import {
 
 const REG_RULE_OPEN = 0;
 const REG_RULE_APPROVAL = 1;
+const PRIVACY_ANONYMOUS = 1;
+const PRIVACY_ENCRYPTED = 2;
 
 describe("Registration", async function () {
   const conn = await network.connect("hardhat");
@@ -123,6 +125,34 @@ describe("Registration", async function () {
     await assert.rejects(
       () => votingFactory.write.castVote([votingId, 0n], { account: voter2.account }),
       /Not registered|revert|fail/i
+    );
+  });
+
+  it("匿名/加密投票: 启用白名单或非 Open 注册在 createVoting 阶段应 revert", async function () {
+    const block = await publicClient.getBlock();
+    const now = Number(block.timestamp);
+
+    // 匿名 + 审核模式
+    const paramsAnonymousApproval = defaultCreateParams(now, {
+      title: "匿名+审核",
+      privacyLevel: PRIVACY_ANONYMOUS,
+      registrationRule: REG_RULE_APPROVAL,
+    });
+    await assert.rejects(
+      () => votingFactory.write.createVoting([paramsAnonymousApproval]),
+      /InvalidParams|revert|fail/i
+    );
+
+    // 加密 + 白名单
+    const paramsEncryptedWhitelist = defaultCreateParams(now, {
+      title: "加密+白名单",
+      privacyLevel: PRIVACY_ENCRYPTED,
+      enableWhitelist: true,
+      whitelist: [voter1.account.address],
+    });
+    await assert.rejects(
+      () => votingFactory.write.createVoting([paramsEncryptedWhitelist]),
+      /WhitelistNotSupported|InvalidParams|revert|fail/i
     );
   });
 });

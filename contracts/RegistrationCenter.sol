@@ -62,7 +62,7 @@ contract RegistrationCenter is IVotingTypes {
     /// @notice 提案ID => 选民地址 => 待审核时选择的分组索引
     mapping(uint256 => mapping(address => uint256)) public pendingGroupIndex;
 
-    /// @notice 主投票合约地址
+    /// @notice 主投票合约地址（构造函数注入，避免被抢先设置）
     address public votingCore;
 
     /// @notice 匿名投票合约地址
@@ -77,14 +77,8 @@ contract RegistrationCenter is IVotingTypes {
         _;
     }
 
-    constructor() {
-        // votingCore 将在部署后设置
-    }
-
-    /// @notice 设置主投票合约地址
-    /// @param _votingCore 主投票合约地址
-    function setVotingCore(address _votingCore) external {
-        require(votingCore == address(0), "VotingCore already set");
+    constructor(address _votingCore) {
+        require(_votingCore != address(0), "Invalid votingCore");
         votingCore = _votingCore;
     }
 

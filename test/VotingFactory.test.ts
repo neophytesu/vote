@@ -8,6 +8,7 @@ import { describe, it } from "node:test";
 import { network } from "hardhat";
 import {
   deployPublicVotingFixture,
+  deployUnconfiguredCoreFixture,
   defaultCreateParams,
 } from "./fixtures/deploy.js";
 
@@ -35,7 +36,7 @@ describe("VotingFactory", async function () {
     const params = defaultCreateParams(now, { title: "" });
     await assert.rejects(
       () => votingFactory.write.createVoting([params]),
-      /Title required|revert|fail/i
+      /InvalidParams|revert|fail/i
     );
   });
 
@@ -45,7 +46,7 @@ describe("VotingFactory", async function () {
     const params = defaultCreateParams(now, { options: ["仅一项"] });
     await assert.rejects(
       () => votingFactory.write.createVoting([params]),
-      /At least 2 options|revert|fail/i
+      /InvalidParams|revert|fail/i
     );
   });
 
@@ -60,7 +61,7 @@ describe("VotingFactory", async function () {
     });
     await assert.rejects(
       () => votingFactory.write.createVoting([params]),
-      /Invalid registration period|revert|fail/i
+      /InvalidParams|revert|fail/i
     );
   });
 
@@ -73,7 +74,7 @@ describe("VotingFactory", async function () {
     });
     await assert.rejects(
       () => votingFactory.write.createVoting([params]),
-      /Invalid voting period|revert|fail/i
+      /InvalidParams|revert|fail/i
     );
   });
 
@@ -88,7 +89,7 @@ describe("VotingFactory", async function () {
     });
     await assert.rejects(
       () => votingFactory.write.createVoting([params]),
-      /Voting must start after registration|revert|fail/i
+      /InvalidParams|revert|fail/i
     );
   });
 
@@ -122,6 +123,28 @@ describe("VotingFactory", async function () {
 
     const canReveal = await votingFactory.read.canRevealResult([votingId]);
     assert.ok(canReveal, "canRevealResult 应为 true");
+  });
+
+  it("useBlockNumber=true 时状态应随区块高度推进", async function () {
+    const startBlock = Number(await publicClient.getBlockNumber());
+    const params = defaultCreateParams(startBlock, {
+      useBlockNumber: true,
+      registrationStart: BigInt(startBlock + 2),
+      registrationEnd: BigInt(startBlock + 4),
+      votingStart: BigInt(startBlock + 5),
+      votingEnd: BigInt(startBlock + 7),
+    });
+    await votingFactory.write.createVoting([params]);
+    const votingId = await votingFactory.read.votingCount();
+
+    // 这里只验证“Created 与 Registration 之间确实受区块高度驱动”，
+    // 避免对 Voting/Tallying 阈值做过多假设。
+    let state = await votingFactory.read.getEffectiveState([votingId]);
+    assert.equal(state, 0, "初始应为 Created(0)");
+
+    await networkHelpers.time.increase(1); // 出块 -> registrationStart 之后
+    state = await votingFactory.read.getEffectiveState([votingId]);
+    assert.equal(state, 1, "useBlockNumber 时应进入 Registration(1)");
   });
 
   it("allowExtension 下 extendRegistrationEnd 应生效且仅创建者可调", async function () {
@@ -230,7 +253,95 @@ describe("VotingFactory", async function () {
         votingFactory.write.setAnonymousVoting([other.account.address], {
           account: other.account,
         }),
-      /Only owner|revert|fail/i
+      /OnlyOwner|Only owner|revert|fail/i
+    );
+  });
+
+  it("匿名投票: 非 Open 注册或启用白名单 createVoting 应 revert", async function () {
+    const block = await publicClient.getBlock();
+    const now = Number(block.timestamp);
+    const base = defaultCreateParams(now, {
+      privacyLevel: PRIVACY_ANONYMOUS,
+      votingRule: 0,
+    });
+
+    // 非 Open 注册
+    const paramsApproval = {
+      ...base,
+      registrationRule: 1, // Approval
+    };
+    await assert.rejects(
+      () => votingFactory.write.createVoting([paramsApproval]),
+      /InvalidParams|revert|fail/i
+    );
+
+    // 启用白名单
+    const paramsWhitelist = {
+      ...base,
+      enableWhitelist: true,
+      whitelist: [deployer.account.address],
+    };
+    await assert.rejects(
+      () => votingFactory.write.createVoting([paramsWhitelist]),
+      /WhitelistNotSupported|InvalidParams|revert|fail/i
+    );
+  });
+
+  it("加密/完全隐私投票: 未配置 EncryptedVoting 或阈值参数非法应 revert", async function () {
+    const { votingFactory: coreOnly } = await deployUnconfiguredCoreFixture(conn);
+    const block = await publicClient.getBlock();
+    const now = Number(block.timestamp);
+
+    // FullPrivacy 但未配置 EncryptedVoting
+    const fullParams = defaultCreateParams(now, {
+      privacyLevel: 3, // FullPrivacy
+      votingRule: 0,
+    });
+    await assert.rejects(
+      () => coreOnly.write.createVoting([fullParams]),
+      /EncryptedNotConfigured|revert|fail/i
+    );
+
+    // Encrypted + 阈值解密但 committee 为空
+    const { votingFactory: configuredFactory } = await deployPublicVotingFixture(conn);
+    const encryptedParamsBadCommittee = defaultCreateParams(now, {
+      privacyLevel: 2, // Encrypted
+      votingRule: 0,
+      useThresholdDecryption: true,
+      thresholdCommittee: [] as readonly `0x${string}`[],
+      thresholdT: 0,
+    });
+    await assert.rejects(
+      () => configuredFactory.write.createVoting([encryptedParamsBadCommittee]),
+      /ThresholdConfigInvalid|revert|fail/i
+    );
+  });
+
+  it("未 setCenters 时 createVoting 应 revert（CentersNotConfigured）", async function () {
+    const { votingFactory: coreOnly } = await deployUnconfiguredCoreFixture(conn);
+    const block = await publicClient.getBlock();
+    const now = Number(block.timestamp);
+    const params = defaultCreateParams(now);
+    await assert.rejects(
+      () => coreOnly.write.createVoting([params]),
+      /CentersNotConfigured|revert|fail/i
+    );
+  });
+
+  it("setCenters 只能调用一次，重复调用应 revert（AlreadySet）", async function () {
+    // 使用 fixture 中已成功调用过 setCenters 的 votingFactory，再次调用应失败
+    const block = await publicClient.getBlock();
+    const now = Number(block.timestamp);
+    void now; // 仅为保持与其他用例风格一致
+    await assert.rejects(
+      () =>
+        votingFactory.write.setCenters([
+          ZERO_ADDRESS,
+          ZERO_ADDRESS,
+          ZERO_ADDRESS,
+          ZERO_ADDRESS,
+        ]),
+      /AlreadySet|revert|fail/i
     );
   });
 });

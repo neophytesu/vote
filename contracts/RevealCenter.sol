@@ -39,7 +39,7 @@ contract RevealCenter is IVotingTypes {
         uint256 revealedAt;        // 揭示时间
     }
 
-    /// @notice 主投票合约地址
+    /// @notice 主投票合约地址（构造函数注入，避免被抢先设置）
     address public votingCore;
 
     /// @notice 提案ID => 投票结果
@@ -51,11 +51,8 @@ contract RevealCenter is IVotingTypes {
         _;
     }
 
-    constructor() {}
-
-    /// @notice 设置主投票合约地址
-    function setVotingCore(address _votingCore) external {
-        require(votingCore == address(0), "VotingCore already set");
+    constructor(address _votingCore) {
+        require(_votingCore != address(0), "Invalid votingCore");
         votingCore = _votingCore;
     }
 

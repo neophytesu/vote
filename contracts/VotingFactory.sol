@@ -7,6 +7,7 @@ import "./VotingCenter.sol";
 import "./RevealCenter.sol";
 import "./StatisticsCenter.sol";
 import "./ExecutionCenter.sol";
+import "./types/VotingDataTypes.sol";
 
 /**
  * @notice ERC-20/ERC-721 通用接口（仅 balanceOf）
@@ -45,6 +46,20 @@ interface IEncryptedVoting {
  * @dev 创建和管理投票实例，实际业务由 RegistrationCenter、VotingCenter、RevealCenter 处理
  */
 contract VotingFactory is IVotingTypes {
+
+    // ==================== 自定义错误（减少字节码体积） ====================
+    error OnlyOwner();
+    error VotingDoesNotExist();
+    error InvalidState();
+    error NotAuthorized();
+    error CentersNotConfigured();
+    error InvalidAddress();
+    error AlreadySet();
+    error InvalidParams();
+    error AnonymousNotConfigured();
+    error EncryptedNotConfigured();
+    error WhitelistNotSupported();
+    error ThresholdConfigInvalid();
     
     /// @notice 投票创建事件
     event VotingCreated(
@@ -84,113 +99,7 @@ contract VotingFactory is IVotingTypes {
     /// @notice 加密投票事件（仅选票哈希）
     event EncryptedVoteCast(uint256 indexed votingId, bytes32 ballotHash);
 
-    /// @notice 投票基本信息结构（不包含由中心合约管理的数据）
-    struct VotingInfo {
-        uint256 id;
-        address creator;
-        string title;
-        string description;
-        string[] options;
-        VotingRule votingRule;
-        PrivacyLevel privacyLevel;
-        VotingState state;
-        uint256 registrationStart;
-        uint256 registrationEnd;
-        uint256 votingStart;
-        uint256 votingEnd;
-        uint256 quorum;
-        uint256 createdAt;
-        bool autoAdvance;  // 是否自动推进状态
-        uint16 visibilityBitmap;  // 可见性配置位图 (每项2位: 0=隐藏,1=创建者,2=参与者,3=公开)
-        string[] weightGroupNames;    // 加权投票：权重分组名称
-        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
-        RegistrationRule registrationRule;  // 注册规则
-        address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
-        uint256 tokenMinBalance;       // 最低持有数量（NFTHolder 默认1，TokenHolder 由创建者设定）
-        bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
-        bool allowExtension;          // 是否允许动态延长注册期/投票期
-        uint256 snapshotBlockNumber;   // 快照区块（0=不使用快照，用当前余额；>0 时需 token 支持 getPastVotes）
-        bool useThresholdDecryption;   // 是否使用阈值解密（仅加密/完全隐私投票）
-        uint8 thresholdT;              // 阈值 t（至少 t 人确认后计票结果才生效）
-        address[] thresholdCommittee;  // 委员会成员地址列表
-        uint256 revealDelay;           // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数；0=投票结束后即可揭示
-    }
-
-    /// @notice 投票详情结构（包含聚合数据）
-    struct VotingDetails {
-        uint256 id;
-        address creator;
-        string title;
-        string description;
-        string[] options;
-        VotingRule votingRule;
-        PrivacyLevel privacyLevel;
-        VotingState state;
-        uint256 registrationStart;
-        uint256 registrationEnd;
-        uint256 votingStart;
-        uint256 votingEnd;
-        uint256 quorum;
-        uint256 totalVoters;
-        uint256 totalVotes;
-        uint256[] voteCounts;
-        bool resultRevealed;
-        uint256 createdAt;
-        bool autoAdvance;  // 是否自动推进状态
-        uint16 visibilityBitmap;  // 可见性配置位图
-        string[] weightGroupNames;    // 加权投票：权重分组名称
-        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
-        RegistrationRule registrationRule;  // 注册规则
-        address tokenContractAddress;  // NFT/Token 合约地址
-        uint256 tokenMinBalance;       // 最低持有数量
-        bool useBlockNumber;           // 时间控制：true=用区块高度，false=用时间戳
-        bool allowExtension;           // 是否允许动态延长注册期/投票期
-        uint256 snapshotBlockNumber;   // 快照区块（0=当前余额）
-        bool useThresholdDecryption;   // 是否使用阈值解密
-        uint8 thresholdT;              // 阈值 t
-        address[] thresholdCommittee;  // 委员会成员（由 QueryCenter 从 getThresholdCommittee 填充）
-        uint256 revealDelay;           // 结果揭示延迟（区块或秒，0=不延迟）
-    }
-
-    /// @notice 创建投票参数结构
-    struct CreateVotingParams {
-        string title;
-        string description;
-        string[] options;
-        VotingRule votingRule;
-        PrivacyLevel privacyLevel;
-        uint256 registrationStart;
-        uint256 registrationEnd;
-        uint256 votingStart;
-        uint256 votingEnd;
-        uint256 quorum;
-        bool autoAdvance;  // 是否自动推进状态
-        uint16 visibilityBitmap;  // 可见性配置位图
-        bool enableWhitelist;  // 是否启用白名单
-        address[] whitelist;   // 白名单地址列表（预注册，可直接投票）
-        uint256[] whitelistGroupIndexes; // 白名单地址对应的权重分组索引（加权+白名单时使用）
-        string[] weightGroupNames;    // 加权投票：权重分组名称
-        uint256[] weightGroupWeights; // 加权投票：权重分组权重值
-        RegistrationRule registrationRule;  // 注册规则
-        address tokenContractAddress;  // NFT/Token 合约地址（NFTHolder/TokenHolder 模式使用）
-        uint256 tokenMinBalance;       // 最低持有数量
-        bool useBlockNumber;            // 时间控制：true=用区块高度，false=用时间戳
-        bool allowExtension;            // 是否允许动态延长注册期/投票期
-        uint256 snapshotBlockNumber;    // 快照区块（0=当前余额；>0 时 Token 支持 getPastVotes 则按该区块余额计资格与权重）
-        // 执行机制（可选）：提案通过且指定选项获胜时执行链上操作
-        IVotingTypes.ExecutionMode executionMode;  // 0=None链下通知, 1=链上自动, 2=多签, 3=Timelock
-        address executionTarget;        // 目标合约地址（address(0) 表示不启用执行）
-        uint256 executionValue;         // 转账金额（wei）
-        bytes executionCalldata;        // 调用数据
-        uint256 executionOnWinningOption;  // 胜出选项索引（默认 0=赞成时执行）
-        address executionMultisig;      // MultiSig 模式：多签钱包地址
-        uint256 executionTimelockDelay; // Timelock 模式：延迟秒数
-        // 加密投票可选：阈值解密（t-of-n 委员会确认计票结果）
-        bool useThresholdDecryption;    // 是否使用阈值解密
-        address[] thresholdCommittee;   // 委员会成员地址列表（n）
-        uint8 thresholdT;               // 阈值 t（至少 t 人确认后结果才生效）
-        uint256 revealDelay;            // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数；0=不延迟
-    }
+    // 共享类型已迁移到 VotingDataTypes（见 contracts/types/VotingDataTypes.sol）
 
     // ==================== 模块化中心合约 ====================
     
@@ -219,7 +128,7 @@ contract VotingFactory is IVotingTypes {
     uint256 public votingCount;
 
     /// @notice 投票ID => 投票基本信息
-    mapping(uint256 => VotingInfo) private votings;
+    mapping(uint256 => VotingDataTypes.VotingInfo) private votings;
     
     /// @notice 创建者 => 投票ID列表
     mapping(address => uint256[]) private creatorVotings;
@@ -230,18 +139,21 @@ contract VotingFactory is IVotingTypes {
     /// @notice 合约所有者
     address public owner;
 
+    /// @notice 各中心是否已配置（防止未初始化就使用）
+    bool public centersConfigured;
+
     modifier onlyOwner() {
-        require(msg.sender == owner, "Only owner");
+        if (msg.sender != owner) revert OnlyOwner();
         _;
     }
 
     modifier votingExists(uint256 votingId) {
-        require(votingId > 0 && votingId <= votingCount, "Voting does not exist");
+        if (votingId == 0 || votingId > votingCount) revert VotingDoesNotExist();
         _;
     }
 
     modifier inState(uint256 votingId, VotingState state) {
-        require(votings[votingId].state == state, "Invalid state");
+        if (votings[votingId].state != state) revert InvalidState();
         _;
     }
 
@@ -259,7 +171,7 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
         returns (VotingState) 
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         // 取消状态：无论手动/自动均直接返回
         if (voting.state == VotingState.Cancelled) {
@@ -298,7 +210,7 @@ contract VotingFactory is IVotingTypes {
      */
     function canRegister(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
         return effectiveState == VotingState.Registration && nowOrBlock <= voting.registrationEnd;
     }
@@ -310,7 +222,7 @@ contract VotingFactory is IVotingTypes {
      */
     function canVote(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
         return effectiveState == VotingState.Voting && nowOrBlock <= voting.votingEnd;
     }
@@ -323,7 +235,7 @@ contract VotingFactory is IVotingTypes {
     function canRevealResult(uint256 votingId) public view votingExists(votingId) returns (bool) {
         VotingState effectiveState = getEffectiveState(votingId);
         if (effectiveState != VotingState.Tallying) return false;
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         if (voting.revealDelay == 0) return true;
         uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
         return nowOrBlock >= voting.votingEnd + voting.revealDelay;
@@ -339,11 +251,86 @@ contract VotingFactory is IVotingTypes {
         return _getSnapshotBalance(votings[votingId], account);
     }
 
+    // ==================== V2 只读拆分 getter（供模块解耦依赖） ====================
+
+    function getVotingCoreFields(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (VotingDataTypes.VotingCoreFields memory)
+    {
+        VotingDataTypes.VotingInfo storage v = votings[votingId];
+        return VotingDataTypes.VotingCoreFields({
+            id: v.id,
+            creator: v.creator,
+            votingRule: v.votingRule,
+            privacyLevel: v.privacyLevel,
+            state: v.state,
+            registrationStart: v.registrationStart,
+            registrationEnd: v.registrationEnd,
+            votingStart: v.votingStart,
+            votingEnd: v.votingEnd,
+            quorum: v.quorum,
+            createdAt: v.createdAt,
+            autoAdvance: v.autoAdvance,
+            visibilityBitmap: v.visibilityBitmap,
+            registrationRule: v.registrationRule,
+            tokenContractAddress: v.tokenContractAddress,
+            tokenMinBalance: v.tokenMinBalance,
+            useBlockNumber: v.useBlockNumber,
+            allowExtension: v.allowExtension,
+            snapshotBlockNumber: v.snapshotBlockNumber,
+            useThresholdDecryption: v.useThresholdDecryption,
+            thresholdT: v.thresholdT,
+            revealDelay: v.revealDelay,
+            optionsCount: v.options.length,
+            weightGroupCount: v.weightGroupWeights.length
+        });
+    }
+
+    function getVotingText(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (string memory title, string memory description)
+    {
+        VotingDataTypes.VotingInfo storage v = votings[votingId];
+        return (v.title, v.description);
+    }
+
+    function getVotingOptions(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (string[] memory)
+    {
+        return votings[votingId].options;
+    }
+
+    function getVotingWeights(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (string[] memory names, uint256[] memory weights)
+    {
+        VotingDataTypes.VotingInfo storage v = votings[votingId];
+        return (v.weightGroupNames, v.weightGroupWeights);
+    }
+
+    function getThresholdCommittee(uint256 votingId)
+        external
+        view
+        votingExists(votingId)
+        returns (address[] memory)
+    {
+        return votings[votingId].thresholdCommittee;
+    }
+
     /**
      * @notice 内部：根据投票配置与快照区块计算 account 的余额（资格/权重）
      * @dev snapshotBlockNumber==0 或 token 无 getPastVotes 时用当前 balanceOf；否则用 getPastVotes(account, snapshotBlockNumber)
      */
-    function _getSnapshotBalance(VotingInfo storage voting, address account) internal view returns (uint256) {
+    function _getSnapshotBalance(VotingDataTypes.VotingInfo storage voting, address account) internal view returns (uint256) {
         if (voting.tokenContractAddress == address(0)) {
             return 0;
         }
@@ -358,23 +345,34 @@ contract VotingFactory is IVotingTypes {
     }
 
     /**
-     * @notice 构造函数
-     * @param _registrationCenter 注册中心合约地址
-     * @param _votingCenter 计票中心合约地址
-     * @param _revealCenter 揭示中心合约地址
-     * @param _statisticsCenter 统计中心合约地址
+     * @notice 构造函数（先部署 core，后续通过 setCenters 绑定各中心）
      */
-    constructor(
+    constructor() {
+        owner = msg.sender;
+    }
+
+    /**
+     * @notice 配置各中心合约地址（仅限所有者，仅可设置一次）
+     * @dev 采用 core 先部署、中心后部署的流程，避免中心合约的 votingCore 被抢先设置
+     */
+    function setCenters(
         address _registrationCenter,
         address _votingCenter,
         address _revealCenter,
         address _statisticsCenter
-    ) {
-        owner = msg.sender;
+    ) external onlyOwner {
+        if (centersConfigured) revert AlreadySet();
+        if (
+            _registrationCenter == address(0) ||
+            _votingCenter == address(0) ||
+            _revealCenter == address(0) ||
+            _statisticsCenter == address(0)
+        ) revert InvalidAddress();
         registrationCenter = RegistrationCenter(_registrationCenter);
         votingCenter = VotingCenter(_votingCenter);
         revealCenter = RevealCenter(_revealCenter);
         statisticsCenter = StatisticsCenter(_statisticsCenter);
+        centersConfigured = true;
     }
 
     /**
@@ -382,8 +380,9 @@ contract VotingFactory is IVotingTypes {
      *         同时传播到 RegistrationCenter 和 VotingCenter（需由 votingCore 调用）
      */
     function setAnonymousVoting(address _anonymousVoting) external onlyOwner {
-        require(anonymousVoting == address(0), "AnonymousVoting already set");
-        require(_anonymousVoting != address(0), "Invalid address");
+        if (!centersConfigured) revert CentersNotConfigured();
+        if (anonymousVoting != address(0)) revert AlreadySet();
+        if (_anonymousVoting == address(0)) revert InvalidAddress();
         anonymousVoting = _anonymousVoting;
         registrationCenter.setAnonymousVoting(_anonymousVoting);
         votingCenter.setAnonymousVoting(_anonymousVoting);
@@ -393,8 +392,9 @@ contract VotingFactory is IVotingTypes {
      * @notice 设置加密投票合约地址（仅 owner 可设一次）
      */
     function setEncryptedVoting(address _encryptedVoting) external onlyOwner {
-        require(encryptedVoting == address(0), "EncryptedVoting already set");
-        require(_encryptedVoting != address(0), "Invalid address");
+        if (!centersConfigured) revert CentersNotConfigured();
+        if (encryptedVoting != address(0)) revert AlreadySet();
+        if (_encryptedVoting == address(0)) revert InvalidAddress();
         encryptedVoting = _encryptedVoting;
         votingCenter.setEncryptedVoting(_encryptedVoting);
     }
@@ -404,11 +404,9 @@ contract VotingFactory is IVotingTypes {
      * @param _executionCenter 执行中心合约地址
      */
     function setExecutionCenter(address _executionCenter) external onlyOwner {
-        require(address(executionCenter) == address(0), "ExecutionCenter already set");
+        if (address(executionCenter) != address(0)) revert AlreadySet();
         if (_executionCenter != address(0)) {
             executionCenter = ExecutionCenter(payable(_executionCenter));
-            executionCenter.setVotingCore(address(this));
-            executionCenter.setRevealCenter(address(revealCenter));
         }
     }
 
@@ -455,57 +453,56 @@ contract VotingFactory is IVotingTypes {
      * @param params 创建参数
      * @return votingId 新投票的ID
      */
-    function createVoting(CreateVotingParams calldata params) external returns (uint256 votingId) {
-        require(bytes(params.title).length > 0, "Title required");
-        require(params.options.length >= 2, "At least 2 options");
-        require(params.registrationEnd > params.registrationStart, "Invalid registration period");
-        require(params.votingEnd > params.votingStart, "Invalid voting period");
-        require(params.votingStart >= params.registrationEnd, "Voting must start after registration");
+    function createVoting(VotingDataTypes.CreateVotingParams calldata params) external returns (uint256 votingId) {
+        if (!centersConfigured) revert CentersNotConfigured();
+        if (bytes(params.title).length == 0) revert InvalidParams();
+        if (params.options.length < 2) revert InvalidParams();
+        if (params.registrationEnd <= params.registrationStart) revert InvalidParams();
+        if (params.votingEnd <= params.votingStart) revert InvalidParams();
+        if (params.votingStart < params.registrationEnd) revert InvalidParams();
         // 匿名投票：支持简单多数、加权、排序选择、二次方；需开放注册 + 无白名单
         if (params.privacyLevel == PrivacyLevel.Anonymous || params.privacyLevel == PrivacyLevel.FullPrivacy) {
-            require(
-                params.votingRule == VotingRule.SimpleMajority ||
-                params.votingRule == VotingRule.Weighted ||
-                params.votingRule == VotingRule.RankedChoice ||
-                params.votingRule == VotingRule.Quadratic,
-                "Anonymous supports simple majority, weighted, ranked choice, quadratic"
-            );
-            require(params.registrationRule == RegistrationRule.Open, "Anonymous voting requires open registration");
-            require(anonymousVoting != address(0), "AnonymousVoting not configured");
-            require(!params.enableWhitelist || params.whitelist.length == 0, "Anonymous voting does not support whitelist");
+            if (
+                params.votingRule != VotingRule.SimpleMajority &&
+                params.votingRule != VotingRule.Weighted &&
+                params.votingRule != VotingRule.RankedChoice &&
+                params.votingRule != VotingRule.Quadratic
+            ) revert InvalidParams();
+            if (params.registrationRule != RegistrationRule.Open) revert InvalidParams();
+            if (anonymousVoting == address(0)) revert AnonymousNotConfigured();
+            if (params.enableWhitelist && params.whitelist.length > 0) revert WhitelistNotSupported();
         }
         if (params.privacyLevel == PrivacyLevel.FullPrivacy) {
-            require(encryptedVoting != address(0), "Full privacy requires EncryptedVoting");
+            if (encryptedVoting == address(0)) revert EncryptedNotConfigured();
         }
         // 加密投票：支持简单多数、加权、排序选择、二次方；需开放注册；无白名单
         if (params.privacyLevel == PrivacyLevel.Encrypted) {
-            require(
-                params.votingRule == VotingRule.SimpleMajority ||
-                params.votingRule == VotingRule.Weighted ||
-                params.votingRule == VotingRule.RankedChoice ||
-                params.votingRule == VotingRule.Quadratic,
-                "Encrypted supports simple majority, weighted, ranked choice, quadratic"
-            );
-            require(params.registrationRule == RegistrationRule.Open, "Encrypted voting requires open registration");
-            require(encryptedVoting != address(0), "EncryptedVoting not configured");
-            require(!params.enableWhitelist || params.whitelist.length == 0, "Encrypted voting does not support whitelist");
+            if (
+                params.votingRule != VotingRule.SimpleMajority &&
+                params.votingRule != VotingRule.Weighted &&
+                params.votingRule != VotingRule.RankedChoice &&
+                params.votingRule != VotingRule.Quadratic
+            ) revert InvalidParams();
+            if (params.registrationRule != RegistrationRule.Open) revert InvalidParams();
+            if (encryptedVoting == address(0)) revert EncryptedNotConfigured();
+            if (params.enableWhitelist && params.whitelist.length > 0) revert WhitelistNotSupported();
             if (params.useThresholdDecryption) {
-                require(params.thresholdCommittee.length > 0, "Threshold committee cannot be empty");
-                require(params.thresholdT > 0 && params.thresholdT <= params.thresholdCommittee.length, "Invalid threshold t");
-                require(params.thresholdCommittee.length <= 50, "Committee too large");
+                if (params.thresholdCommittee.length == 0) revert ThresholdConfigInvalid();
+                if (params.thresholdT == 0 || params.thresholdT > params.thresholdCommittee.length) revert ThresholdConfigInvalid();
+                if (params.thresholdCommittee.length > 50) revert ThresholdConfigInvalid();
             }
         }
         if (params.privacyLevel == PrivacyLevel.FullPrivacy && params.useThresholdDecryption) {
-            require(params.thresholdCommittee.length > 0, "Threshold committee cannot be empty");
-            require(params.thresholdT > 0 && params.thresholdT <= params.thresholdCommittee.length, "Invalid threshold t");
-            require(params.thresholdCommittee.length <= 50, "Committee too large");
+            if (params.thresholdCommittee.length == 0) revert ThresholdConfigInvalid();
+            if (params.thresholdT == 0 || params.thresholdT > params.thresholdCommittee.length) revert ThresholdConfigInvalid();
+            if (params.thresholdCommittee.length > 50) revert ThresholdConfigInvalid();
         }
 
         votingCount++;
         votingId = votingCount;
 
         // 存储投票基本信息
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         voting.id = votingId;
         voting.creator = msg.sender;
         voting.title = params.title;
@@ -531,7 +528,7 @@ contract VotingFactory is IVotingTypes {
             voting.useThresholdDecryption = true;
             voting.thresholdT = params.thresholdT;
             for (uint256 i = 0; i < params.thresholdCommittee.length; i++) {
-                require(params.thresholdCommittee[i] != address(0), "Zero address in committee");
+                if (params.thresholdCommittee[i] == address(0)) revert InvalidAddress();
                 voting.thresholdCommittee.push(params.thresholdCommittee[i]);
             }
         }
@@ -656,7 +653,7 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
         inState(votingId, VotingState.Created)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
             uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
@@ -681,7 +678,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             msg.sender == voting.creator || msg.sender == owner,
             "Not authorized"
@@ -708,7 +705,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(voting.allowExtension, "Extension disabled");
         require(msg.sender == voting.creator || msg.sender == owner, "Not authorized");
         require(voting.state == VotingState.Registration, "Must be in Registration");
@@ -727,7 +724,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(voting.allowExtension, "Extension disabled");
         require(msg.sender == voting.creator || msg.sender == owner, "Not authorized");
         require(voting.state == VotingState.Voting, "Must be in Voting");
@@ -746,7 +743,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             voting.privacyLevel != PrivacyLevel.Anonymous && voting.privacyLevel != PrivacyLevel.FullPrivacy,
             "Use registerVoterAnonymous for anonymous voting"
@@ -808,7 +805,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         // 必须是加权投票
         require(voting.votingRule == VotingRule.Weighted, "Not weighted voting");
@@ -872,7 +869,7 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
         inState(votingId, VotingState.Registration)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
             uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
@@ -898,7 +895,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             voting.privacyLevel != PrivacyLevel.Anonymous && voting.privacyLevel != PrivacyLevel.FullPrivacy,
             "Use castVoteAnonymous for anonymous voting"
@@ -955,7 +952,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
 
         // 验证投票规则必须是二次方投票
         require(voting.votingRule == VotingRule.Quadratic, "Not quadratic voting");
@@ -1004,7 +1001,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
 
         // 验证投票规则必须是排序选择
         require(voting.votingRule == VotingRule.RankedChoice, "Not ranked choice voting");
@@ -1044,7 +1041,7 @@ contract VotingFactory is IVotingTypes {
         votingExists(votingId)
         inState(votingId, VotingState.Voting)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         if (voting.autoAdvance) {
             uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
@@ -1069,7 +1066,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         
         // 自动推进模式：使用有效状态检查
         if (voting.autoAdvance) {
@@ -1130,7 +1127,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             msg.sender == voting.creator || msg.sender == owner,
             "Not authorized"
@@ -1161,7 +1158,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             msg.sender == voting.creator || msg.sender == owner,
             "Not authorized"
@@ -1189,7 +1186,7 @@ contract VotingFactory is IVotingTypes {
         external
         votingExists(votingId)
     {
-        VotingInfo storage voting = votings[votingId];
+        VotingDataTypes.VotingInfo storage voting = votings[votingId];
         require(
             msg.sender == voting.creator || msg.sender == owner,
             "Not authorized"
@@ -1213,7 +1210,7 @@ contract VotingFactory is IVotingTypes {
         external 
         view 
         votingExists(votingId)
-        returns (VotingInfo memory) 
+        returns (VotingDataTypes.VotingInfo memory) 
     {
         return votings[votingId];
     }
@@ -1258,6 +1255,14 @@ contract VotingFactory is IVotingTypes {
         }
         if (_statisticsCenter != address(0)) {
             statisticsCenter = StatisticsCenter(_statisticsCenter);
+        }
+        if (
+            address(registrationCenter) != address(0) &&
+            address(votingCenter) != address(0) &&
+            address(revealCenter) != address(0) &&
+            address(statisticsCenter) != address(0)
+        ) {
+            centersConfigured = true;
         }
     }
 

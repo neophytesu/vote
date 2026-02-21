@@ -34,23 +34,21 @@ export async function deployPublicVotingFixture(conn: {
     throw new Error("Missing viem clients or networkHelpers");
   }
 
-  const registrationCenter = (await viem.deployContract("RegistrationCenter")) as ContractBase;
-  const votingCenter = (await viem.deployContract("VotingCenter")) as ContractWithRead;
-  const revealCenter = (await viem.deployContract("RevealCenter")) as ContractWithRead;
-  const statisticsCenter = (await viem.deployContract("StatisticsCenter")) as ContractWithRead;
-  const votingFactory = (await viem.deployContract("VotingFactory", [
+  // core 先部署，中心构造函数注入 votingCore，避免 setVotingCore 被抢先调用
+  const votingFactory = (await viem.deployContract("VotingFactory", [])) as DeployFixtureResult["votingFactory"];
+
+  const registrationCenter = (await viem.deployContract("RegistrationCenter", [votingFactory.address])) as ContractBase;
+  const votingCenter = (await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address])) as ContractWithRead;
+  const revealCenter = (await viem.deployContract("RevealCenter", [votingFactory.address])) as ContractWithRead;
+  const statisticsCenter = (await viem.deployContract("StatisticsCenter", [votingFactory.address])) as ContractWithRead;
+
+  await votingFactory.write.setCenters([
     registrationCenter.address,
     votingCenter.address,
     revealCenter.address,
     statisticsCenter.address,
-  ])) as DeployFixtureResult["votingFactory"];
+  ]);
   const queryCenter = (await viem.deployContract("QueryCenter", [votingFactory.address])) as DeployFixtureResult["queryCenter"];
-
-  await registrationCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
-  await revealCenter.write.setVotingCore([votingFactory.address]);
-  await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
 
   return {
     votingFactory,
@@ -63,6 +61,21 @@ export async function deployPublicVotingFixture(conn: {
     walletClients: walletClients as WalletClient[],
     networkHelpers,
   };
+}
+
+/**
+ * 仅部署未配置中心的 VotingFactory（用于测试 setCenters/centersConfigured 相关负路径）
+ */
+export async function deployUnconfiguredCoreFixture(conn: {
+  viem: { getPublicClient: () => Promise<PublicClient | undefined>; getWalletClients: () => Promise<WalletClient[] | undefined>; deployContract: (name: string, args?: unknown[]) => Promise<ContractBase | ContractWithRead> };
+}): Promise<{
+  votingFactory: DeployFixtureResult["votingFactory"];
+  publicClient: PublicClient;
+}> {
+  const { viem } = conn;
+  const publicClient = await viem.getPublicClient();
+  const votingFactory = (await viem.deployContract("VotingFactory", [])) as DeployFixtureResult["votingFactory"];
+  return { votingFactory, publicClient: publicClient! };
 }
 
 /** 默认创建参数（公开投票、无执行），时间基于当前区块 */

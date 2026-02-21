@@ -37,11 +37,13 @@ describe("ThresholdDecryption", async function () {
 
   it("完整流程：创建(阈值解密) -> 注册 -> 投票 -> 提交计票 -> 2/2 委员会确认 -> 揭示", async function () {
     // ---------- 1. 部署 ----------
-    const registrationCenter = await viem.deployContract("RegistrationCenter");
-    const votingCenter = await viem.deployContract("VotingCenter");
-    const revealCenter = await viem.deployContract("RevealCenter");
-    const statisticsCenter = await viem.deployContract("StatisticsCenter");
-    const votingFactory = await viem.deployContract("VotingFactory", [
+    const votingFactory = await viem.deployContract("VotingFactory", []);
+    const registrationCenter = await viem.deployContract("RegistrationCenter", [votingFactory.address]);
+    const votingCenter = await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address]);
+    const revealCenter = await viem.deployContract("RevealCenter", [votingFactory.address]);
+    const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
+
+    await votingFactory.write.setCenters([
       registrationCenter.address,
       votingCenter.address,
       revealCenter.address,
@@ -54,12 +56,7 @@ describe("ThresholdDecryption", async function () {
       statisticsCenter.address,
     ]);
 
-    await registrationCenter.write.setVotingCore([votingFactory.address]);
-    await votingCenter.write.setVotingCore([votingFactory.address]);
-    await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
     await votingFactory.write.setEncryptedVoting([encryptedVoting.address]);
-    await revealCenter.write.setVotingCore([votingFactory.address]);
-    await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
     await statisticsCenter.write.setEncryptedVoting([encryptedVoting.address]);
 
     const block = await publicClient.getBlock();
@@ -193,11 +190,13 @@ describe("ThresholdDecryption", async function () {
   });
 
   it("未达 t 时计票不应生效；非委员会成员不能确认", async function () {
-    const registrationCenter = await viem.deployContract("RegistrationCenter");
-    const votingCenter = await viem.deployContract("VotingCenter");
-    const revealCenter = await viem.deployContract("RevealCenter");
-    const statisticsCenter = await viem.deployContract("StatisticsCenter");
-    const votingFactory = await viem.deployContract("VotingFactory", [
+    const votingFactory = await viem.deployContract("VotingFactory", []);
+    const registrationCenter = await viem.deployContract("RegistrationCenter", [votingFactory.address]);
+    const votingCenter = await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address]);
+    const revealCenter = await viem.deployContract("RevealCenter", [votingFactory.address]);
+    const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
+
+    await votingFactory.write.setCenters([
       registrationCenter.address,
       votingCenter.address,
       revealCenter.address,
@@ -210,12 +209,7 @@ describe("ThresholdDecryption", async function () {
       statisticsCenter.address,
     ]);
 
-    await registrationCenter.write.setVotingCore([votingFactory.address]);
-    await votingCenter.write.setVotingCore([votingFactory.address]);
-    await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
     await votingFactory.write.setEncryptedVoting([encryptedVoting.address]);
-    await revealCenter.write.setVotingCore([votingFactory.address]);
-    await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
     await statisticsCenter.write.setEncryptedVoting([encryptedVoting.address]);
 
     const block = await publicClient.getBlock();

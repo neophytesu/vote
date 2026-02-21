@@ -2,47 +2,11 @@
 pragma solidity ^0.8.28;
 
 import "./interfaces/IVotingTypes.sol";
+import "./interfaces/IVotingCoreView.sol";
+import "./interfaces/IVotingCoreCallbacks.sol";
+import "./types/VotingDataTypes.sol";
 import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
-
-/// @notice VotingFactory 的 VotingInfo 结构（与合约内定义一致）
-struct EncryptedVotingInfo {
-    uint256 id;
-    address creator;
-    string title;
-    string description;
-    string[] options;
-    IVotingTypes.VotingRule votingRule;
-    IVotingTypes.PrivacyLevel privacyLevel;
-    IVotingTypes.VotingState state;
-    uint256 registrationStart;
-    uint256 registrationEnd;
-    uint256 votingStart;
-    uint256 votingEnd;
-    uint256 quorum;
-    uint256 createdAt;
-    bool autoAdvance;
-    uint16 visibilityBitmap;
-    string[] weightGroupNames;
-    uint256[] weightGroupWeights;
-    IVotingTypes.RegistrationRule registrationRule;
-    address tokenContractAddress;
-    uint256 tokenMinBalance;
-    bool useBlockNumber;
-    bool allowExtension;
-    uint256 snapshotBlockNumber;  // 与 VotingInfo 布局一致
-    bool useThresholdDecryption;   // 是否使用阈值解密（t-of-n 委员会确认）
-    uint8 thresholdT;             // 阈值 t
-    address[] thresholdCommittee; // 委员会成员
-    uint256 revealDelay;          // 结果揭示延迟（区块或秒，0=不延迟）
-}
-
-interface IEncryptedVotingFactory {
-    function getVotingRaw(uint256 votingId) external view returns (EncryptedVotingInfo memory);
-    function canVote(uint256 votingId) external view returns (bool);
-    function emitEncryptedVoteCast(uint256 votingId, bytes32 ballotHash) external;
-    function owner() external view returns (address);
-}
 
 interface IEncryptedStatisticsCenter {
     function recordVoteCast(uint256 votingId, address voter) external;
@@ -114,7 +78,7 @@ contract EncryptedVoting is IVotingTypes {
      * @param encryptedBallot 加密后的选票（同态加密密文，由前端/客户端生成）
      */
     function castVoteEncrypted(uint256 votingId, bytes calldata encryptedBallot) external {
-        EncryptedVotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Encrypted ||
             voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
@@ -137,7 +101,7 @@ contract EncryptedVoting is IVotingTypes {
         if (statisticsCenter != address(0)) {
             IEncryptedStatisticsCenter(statisticsCenter).recordVoteCast(votingId, msg.sender);
         }
-        IEncryptedVotingFactory(votingFactory).emitEncryptedVoteCast(votingId, ballotHash);
+        IVotingCoreCallbacks(votingFactory).emitEncryptedVoteCast(votingId, ballotHash);
         emit EncryptedBallotCast(votingId, msg.sender, ballotHash);
     }
 
@@ -152,23 +116,23 @@ contract EncryptedVoting is IVotingTypes {
         uint256 totalBallots,
         uint256[] calldata decryptedCounts
     ) external {
-        EncryptedVotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Encrypted ||
             voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not encrypted voting"
         );
         require(
-            _getEffectiveState(votingId) == IVotingTypes.VotingState.Tallying,
+            IVotingCoreView(votingFactory).getEffectiveState(votingId) == IVotingTypes.VotingState.Tallying,
             "Must be in Tallying state"
         );
-        require(decryptedCounts.length == voting.options.length, "Counts length mismatch");
+        require(decryptedCounts.length == voting.optionsCount, "Counts length mismatch");
 
         if (voting.useThresholdDecryption) {
             require(
                 msg.sender == voting.creator ||
-                msg.sender == IEncryptedVotingFactory(votingFactory).owner() ||
-                _isCommitteeMember(voting, msg.sender),
+                msg.sender == IVotingCoreView(votingFactory).owner() ||
+                _isCommitteeMember(votingId, msg.sender),
                 "Only creator, owner or committee"
             );
             require(pendingTallySubmittedBy[votingId] == address(0), "Pending tally already exists");
@@ -180,7 +144,7 @@ contract EncryptedVoting is IVotingTypes {
             pendingApprovalCount[votingId] = 0;
         } else {
             require(
-                msg.sender == voting.creator || msg.sender == IEncryptedVotingFactory(votingFactory).owner(),
+                msg.sender == voting.creator || msg.sender == IVotingCoreView(votingFactory).owner(),
                 "Only creator or factory owner"
             );
             votingCenter.setTallyResultEncrypted(votingId, totalBallots, decryptedCounts);
@@ -193,15 +157,15 @@ contract EncryptedVoting is IVotingTypes {
      */
     function approveTallyResult(uint256 votingId) external {
         require(pendingTallySubmittedBy[votingId] != address(0), "No pending tally");
-        EncryptedVotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(voting.useThresholdDecryption, "Not threshold decryption");
-        require(_isCommitteeMember(voting, msg.sender), "Not committee member");
+        require(_isCommitteeMember(votingId, msg.sender), "Not committee member");
         require(!pendingApproved[votingId][msg.sender], "Already approved");
         pendingApproved[votingId][msg.sender] = true;
         pendingApprovalCount[votingId]++;
 
         if (pendingApprovalCount[votingId] >= voting.thresholdT) {
-            uint256 optionCount = voting.options.length;
+            uint256 optionCount = voting.optionsCount;
             uint256[] memory decryptedCounts = new uint256[](optionCount);
             for (uint256 i = 0; i < optionCount; i++) {
                 decryptedCounts[i] = pendingDecryptedCounts[votingId][i];
@@ -211,32 +175,21 @@ contract EncryptedVoting is IVotingTypes {
         }
     }
 
-    function _isCommitteeMember(EncryptedVotingInfo memory voting, address account) internal pure returns (bool) {
-        for (uint256 i = 0; i < voting.thresholdCommittee.length; i++) {
-            if (voting.thresholdCommittee[i] == account) return true;
+    function _isCommitteeMember(uint256 votingId, address account) internal view returns (bool) {
+        address[] memory committee = IVotingCoreView(votingFactory).getThresholdCommittee(votingId);
+        for (uint256 i = 0; i < committee.length; i++) {
+            if (committee[i] == account) return true;
         }
         return false;
     }
 
-    function _getVoting(uint256 votingId) internal view returns (EncryptedVotingInfo memory) {
-        return IEncryptedVotingFactory(votingFactory).getVotingRaw(votingId);
+    function _getVotingCore(uint256 votingId) internal view returns (VotingDataTypes.VotingCoreFields memory) {
+        return IVotingCoreView(votingFactory).getVotingCoreFields(votingId);
     }
 
-    function _getEffectiveState(uint256 votingId) internal view returns (IVotingTypes.VotingState) {
-        EncryptedVotingInfo memory voting = _getVoting(votingId);
-        if (voting.state == IVotingTypes.VotingState.Cancelled) return IVotingTypes.VotingState.Cancelled;
-        if (!voting.autoAdvance) return voting.state;
-        if (voting.state == IVotingTypes.VotingState.Finalized) return IVotingTypes.VotingState.Finalized;
-        uint256 nowOrBlock = voting.useBlockNumber ? block.number : block.timestamp;
-        if (nowOrBlock > voting.votingEnd) return IVotingTypes.VotingState.Tallying;
-        if (nowOrBlock >= voting.votingStart) return IVotingTypes.VotingState.Voting;
-        if (nowOrBlock >= voting.registrationStart) return IVotingTypes.VotingState.Registration;
-        return IVotingTypes.VotingState.Created;
-    }
-
-    function _requireCanVote(uint256 votingId, EncryptedVotingInfo memory voting) internal view {
+    function _requireCanVote(uint256 votingId, VotingDataTypes.VotingCoreFields memory voting) internal view {
         if (voting.autoAdvance) {
-            require(IEncryptedVotingFactory(votingFactory).canVote(votingId), "Voting not open");
+            require(IVotingCoreView(votingFactory).canVote(votingId), "Voting not open");
         } else {
             require(voting.state == IVotingTypes.VotingState.Voting, "Invalid state");
         }

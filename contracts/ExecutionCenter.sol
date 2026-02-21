@@ -63,17 +63,10 @@ contract ExecutionCenter is IVotingTypes {
         _;
     }
 
-    constructor() {}
-
-    function setVotingCore(address _votingCore) external {
-        require(votingCore == address(0), "VotingCore already set");
-        require(_votingCore != address(0), "Invalid address");
+    constructor(address _votingCore, address _revealCenter) {
+        require(_votingCore != address(0), "Invalid votingCore");
+        require(_revealCenter != address(0), "Invalid revealCenter");
         votingCore = _votingCore;
-    }
-
-    function setRevealCenter(address _revealCenter) external {
-        require(address(revealCenter) == address(0), "RevealCenter already set");
-        require(_revealCenter != address(0), "Invalid address");
         revealCenter = RevealCenter(_revealCenter);
     }
 

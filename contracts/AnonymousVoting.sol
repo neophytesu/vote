@@ -3,46 +3,11 @@ pragma solidity ^0.8.28;
 
 import "./interfaces/IVotingTypes.sol";
 import "./interfaces/ISemaphoreVoting.sol";
+import "./interfaces/IVotingCoreView.sol";
+import "./interfaces/IVotingCoreCallbacks.sol";
+import "./types/VotingDataTypes.sol";
 import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
-
-/// @notice VotingFactory 的 VotingInfo 结构（与合约内定义一致）
-struct VotingInfo {
-    uint256 id;
-    address creator;
-    string title;
-    string description;
-    string[] options;
-    IVotingTypes.VotingRule votingRule;
-    IVotingTypes.PrivacyLevel privacyLevel;
-    IVotingTypes.VotingState state;
-    uint256 registrationStart;
-    uint256 registrationEnd;
-    uint256 votingStart;
-    uint256 votingEnd;
-    uint256 quorum;
-    uint256 createdAt;
-    bool autoAdvance;
-    uint16 visibilityBitmap;
-    string[] weightGroupNames;
-    uint256[] weightGroupWeights;
-    IVotingTypes.RegistrationRule registrationRule;
-    address tokenContractAddress;
-    uint256 tokenMinBalance;
-    bool useBlockNumber;
-    bool allowExtension;
-    uint256 snapshotBlockNumber;
-}
-
-interface IAnonymousVotingFactory {
-    function getVotingRaw(uint256 votingId) external view returns (VotingInfo memory);
-    function canRegister(uint256 votingId) external view returns (bool);
-    function canVote(uint256 votingId) external view returns (bool);
-    function getSnapshotBalance(uint256 votingId, address account) external view returns (uint256);
-    function recordVoterParticipation(address voter, uint256 votingId) external;
-    function emitVoterRegistered(uint256 votingId, address voter) external;
-    function emitAnonymousVoteCast(uint256 votingId, uint256 optionIndex, uint256 nullifierHash) external;
-}
 
 interface IAnonymousStatisticsCenter {
     function recordVoterRegistered(uint256 votingId, address voter) external;
@@ -148,7 +113,7 @@ contract AnonymousVoting is IVotingTypes {
     function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)
         external
     {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
@@ -167,7 +132,7 @@ contract AnonymousVoting is IVotingTypes {
         if (voting.registrationRule == IVotingTypes.RegistrationRule.NFTHolder || voting.registrationRule == IVotingTypes.RegistrationRule.TokenHolder) {
             require(voting.tokenContractAddress != address(0), "Token contract not set");
             require(
-                IAnonymousVotingFactory(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
+                IVotingCoreView(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
                 "Insufficient token balance at snapshot"
             );
         }
@@ -188,13 +153,13 @@ contract AnonymousVoting is IVotingTypes {
     function registerVoterAnonymousWeighted(uint256 votingId, uint256 identityCommitment, uint256 groupIndex)
         external
     {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
         );
         require(voting.votingRule == IVotingTypes.VotingRule.Weighted, "Not weighted voting");
-        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+        require(groupIndex < voting.weightGroupCount, "Invalid group index");
         require(_votingWeightGroupCreated[votingId][groupIndex], "No Semaphore group for this weight tier");
         uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
 
@@ -203,12 +168,14 @@ contract AnonymousVoting is IVotingTypes {
         if (voting.registrationRule == IVotingTypes.RegistrationRule.NFTHolder || voting.registrationRule == IVotingTypes.RegistrationRule.TokenHolder) {
             require(voting.tokenContractAddress != address(0), "Token contract not set");
             require(
-                IAnonymousVotingFactory(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
+                IVotingCoreView(votingFactory).getSnapshotBalance(votingId, msg.sender) >= voting.tokenMinBalance,
                 "Insufficient token balance at snapshot"
             );
         }
 
-        uint256 weight = voting.weightGroupWeights[groupIndex];
+        (string[] memory _names, uint256[] memory weights) = IVotingCoreView(votingFactory).getVotingWeights(votingId);
+        _names;
+        uint256 weight = weights[groupIndex];
         semaphore.addMember(groupId, identityCommitment);
         require(registrationCenter.registerVoterWithWeight(votingId, msg.sender, weight, groupIndex), "Registration failed");
 
@@ -227,7 +194,7 @@ contract AnonymousVoting is IVotingTypes {
         uint256 optionIndex,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
@@ -236,7 +203,7 @@ contract AnonymousVoting is IVotingTypes {
 
         _requireCanVote(votingId, voting);
         require(proof.message == optionIndex, "Proof message mismatch");
-        require(optionIndex < voting.options.length, "Invalid option index");
+        require(optionIndex < voting.optionsCount, "Invalid option index");
         require(_votingHasSemaphoreGroup[votingId], "No Semaphore group");
         uint256 groupId = votingSemaphoreGroupId[votingId];
 
@@ -260,7 +227,7 @@ contract AnonymousVoting is IVotingTypes {
         bytes calldata encryptedBallot,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Full privacy only"
@@ -293,7 +260,7 @@ contract AnonymousVoting is IVotingTypes {
         uint256 groupIndex,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Full privacy only"
@@ -302,7 +269,7 @@ contract AnonymousVoting is IVotingTypes {
         _requireCanVote(votingId, voting);
         require(proof.message == 0, "Proof message must be 0 for full privacy");
         require(encryptedBallot.length > 0, "Empty ballot");
-        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+        require(groupIndex < voting.weightGroupCount, "Invalid group index");
         require(_votingWeightGroupCreated[votingId][groupIndex], "No Semaphore group for this weight");
         uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
 
@@ -322,7 +289,7 @@ contract AnonymousVoting is IVotingTypes {
         uint256 groupIndex,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
@@ -331,14 +298,16 @@ contract AnonymousVoting is IVotingTypes {
 
         _requireCanVote(votingId, voting);
         require(proof.message == optionIndex, "Proof message mismatch");
-        require(optionIndex < voting.options.length, "Invalid option index");
-        require(groupIndex < voting.weightGroupWeights.length, "Invalid group index");
+        require(optionIndex < voting.optionsCount, "Invalid option index");
+        require(groupIndex < voting.weightGroupCount, "Invalid group index");
         require(_votingWeightGroupCreated[votingId][groupIndex], "No Semaphore group");
         uint256 groupId = votingSemaphoreGroupIdByWeight[votingId][groupIndex];
 
         semaphore.validateProof(groupId, proof);
 
-        uint256 weight = voting.weightGroupWeights[groupIndex];
+        (string[] memory _names, uint256[] memory weights) = IVotingCoreView(votingFactory).getVotingWeights(votingId);
+        _names;
+        uint256 weight = weights[groupIndex];
         bool success = votingCenter.castVoteAnonymousWeighted(votingId, optionIndex, weight);
         require(success, "Vote failed");
 
@@ -356,7 +325,7 @@ contract AnonymousVoting is IVotingTypes {
         uint256 encodedRanking,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
@@ -370,7 +339,7 @@ contract AnonymousVoting is IVotingTypes {
 
         semaphore.validateProof(groupId, proof);
 
-        uint256 n = voting.options.length;
+        uint256 n = voting.optionsCount;
         uint256[] memory rankedOptions = new uint256[](n);
         uint256 enc = encodedRanking;
         for (uint256 i = 0; i < n; i++) {
@@ -401,7 +370,7 @@ contract AnonymousVoting is IVotingTypes {
         uint256 encodedVote,
         ISemaphoreVoting.SemaphoreProof calldata proof
     ) external {
-        VotingInfo memory voting = _getVoting(votingId);
+        VotingDataTypes.VotingCoreFields memory voting = _getVotingCore(votingId);
         require(
             voting.privacyLevel == IVotingTypes.PrivacyLevel.Anonymous || voting.privacyLevel == IVotingTypes.PrivacyLevel.FullPrivacy,
             "Not anonymous voting"
@@ -416,7 +385,7 @@ contract AnonymousVoting is IVotingTypes {
         semaphore.validateProof(groupId, proof);
 
         (uint256[] memory optionIndexes, uint256[] memory voteAmounts, uint256 firstOption) =
-            _decodeQuadraticVote(encodedVote, voting.options.length);
+            _decodeQuadraticVote(encodedVote, voting.optionsCount);
 
         bool success = votingCenter.castQuadraticVoteAnonymous(votingId, optionIndexes, voteAmounts);
         require(success, "Vote failed");
@@ -429,36 +398,36 @@ contract AnonymousVoting is IVotingTypes {
 
     // ==================== 内部辅助 ====================
 
-    function _getVoting(uint256 votingId) internal view returns (VotingInfo memory) {
-        return IAnonymousVotingFactory(votingFactory).getVotingRaw(votingId);
+    function _getVotingCore(uint256 votingId) internal view returns (VotingDataTypes.VotingCoreFields memory) {
+        return IVotingCoreView(votingFactory).getVotingCoreFields(votingId);
     }
 
-    function _requireCanRegister(uint256 votingId, VotingInfo memory voting) internal view {
+    function _requireCanRegister(uint256 votingId, VotingDataTypes.VotingCoreFields memory voting) internal view {
         if (voting.autoAdvance) {
-            require(IAnonymousVotingFactory(votingFactory).canRegister(votingId), "Registration not open");
+            require(IVotingCoreView(votingFactory).canRegister(votingId), "Registration not open");
         } else {
             require(voting.state == IVotingTypes.VotingState.Registration, "Invalid state");
         }
     }
 
-    function _requireCanVote(uint256 votingId, VotingInfo memory voting) internal view {
+    function _requireCanVote(uint256 votingId, VotingDataTypes.VotingCoreFields memory voting) internal view {
         if (voting.autoAdvance) {
-            require(IAnonymousVotingFactory(votingFactory).canVote(votingId), "Voting not open");
+            require(IVotingCoreView(votingFactory).canVote(votingId), "Voting not open");
         } else {
             require(voting.state == IVotingTypes.VotingState.Voting, "Invalid state");
         }
     }
 
     function _recordVoterParticipation(address voter, uint256 votingId) internal {
-        IAnonymousVotingFactory(votingFactory).recordVoterParticipation(voter, votingId);
+        IVotingCoreCallbacks(votingFactory).recordVoterParticipation(voter, votingId);
     }
 
     function _emitVoterRegistered(uint256 votingId, address voter) internal {
-        IAnonymousVotingFactory(votingFactory).emitVoterRegistered(votingId, voter);
+        IVotingCoreCallbacks(votingFactory).emitVoterRegistered(votingId, voter);
     }
 
     function _emitAnonymousVoteCast(uint256 votingId, uint256 optionIndex, uint256 nullifierHash) internal {
-        IAnonymousVotingFactory(votingFactory).emitAnonymousVoteCast(votingId, optionIndex, nullifierHash);
+        IVotingCoreCallbacks(votingFactory).emitAnonymousVoteCast(votingId, optionIndex, nullifierHash);
     }
 
     function _decodeQuadraticVote(uint256 encodedVote, uint256 n)

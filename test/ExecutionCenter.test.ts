@@ -36,11 +36,15 @@ describe("ExecutionCenter", async function () {
   const conn = await network.connect("hardhat");
   const {
     votingFactory,
+    revealCenter,
     publicClient,
     networkHelpers,
   } = await deployPublicVotingFixture(conn);
 
-  const executionCenter = await conn.viem.deployContract("ExecutionCenter");
+  const executionCenter = await conn.viem.deployContract("ExecutionCenter", [
+    votingFactory.address,
+    revealCenter.address,
+  ]);
   await votingFactory.write.setExecutionCenter([executionCenter.address]);
 
   const walletClients = (await conn.viem.getWalletClients())!;

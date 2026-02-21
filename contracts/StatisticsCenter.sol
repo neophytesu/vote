@@ -138,9 +138,10 @@ contract StatisticsCenter is IVotingTypes {
     }
     
     // ==================== 构造函数 ====================
-    
-    constructor() {
+
+    constructor(address _authorizedCaller) {
         owner = msg.sender;
+        authorizedCaller = _authorizedCaller;
     }
     
     /**

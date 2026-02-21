@@ -34,6 +34,7 @@ const createParamsBase = {
   useThresholdDecryption: false,
   thresholdCommittee: [] as readonly `0x${string}`[],
   thresholdT: 0,
+  revealDelay: 0n,
 };
 
 describe("SnapshotVoting", async function () {
@@ -51,23 +52,19 @@ describe("SnapshotVoting", async function () {
   if (!deployer || !voter1 || !voter2) throw new Error("Need at least 3 wallet clients");
 
   // 部署中心与工厂（不部署 Semaphore/Encrypted/Execution）
-  const registrationCenter = await viem.deployContract("RegistrationCenter");
-  const votingCenter = await viem.deployContract("VotingCenter");
-  const revealCenter = await viem.deployContract("RevealCenter");
-  const statisticsCenter = await viem.deployContract("StatisticsCenter");
-  const votingFactory = await viem.deployContract("VotingFactory", [
+  const votingFactory = await viem.deployContract("VotingFactory", []);
+  const registrationCenter = await viem.deployContract("RegistrationCenter", [votingFactory.address]);
+  const votingCenter = await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address]);
+  const revealCenter = await viem.deployContract("RevealCenter", [votingFactory.address]);
+  const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
+
+  await votingFactory.write.setCenters([
     registrationCenter.address,
     votingCenter.address,
     revealCenter.address,
     statisticsCenter.address,
   ]);
   await viem.deployContract("QueryCenter", [votingFactory.address]);
-
-  await registrationCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
-  await revealCenter.write.setVotingCore([votingFactory.address]);
-  await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
 
   const block = await publicClient.getBlock();
   const now = Number(block.timestamp);

@@ -23,6 +23,7 @@
     "clsx": "^2.1.1",
     "ethers": "^6.16.0",
     "lucide-react": "^0.562.0",
+    "paillier-bigint": "^3.4.3",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwind-merge": "^3.4.0",

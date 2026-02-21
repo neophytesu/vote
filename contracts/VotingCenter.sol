@@ -35,7 +35,7 @@ contract VotingCenter is IVotingTypes {
         uint256 weight;  // 投票权重（简单多数为1，加权投票为分组权重）
     }
 
-    /// @notice 主投票合约地址
+    /// @notice 主投票合约地址（构造函数注入，避免被抢先设置）
     address public votingCore;
 
     /// @notice 匿名投票合约地址
@@ -86,17 +86,10 @@ contract VotingCenter is IVotingTypes {
         _;
     }
 
-    constructor() {}
-
-    /// @notice 设置主投票合约地址
-    function setVotingCore(address _votingCore) external {
-        require(votingCore == address(0), "VotingCore already set");
+    constructor(address _votingCore, address _registrationCenter) {
+        require(_votingCore != address(0), "Invalid votingCore");
+        require(_registrationCenter != address(0), "Invalid registrationCenter");
         votingCore = _votingCore;
-    }
-
-    /// @notice 设置注册中心地址
-    function setRegistrationCenter(address _registrationCenter) external {
-        require(registrationCenter == address(0), "RegistrationCenter already set");
         registrationCenter = _registrationCenter;
     }
 

@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
+import { getAddress, isAddress } from "ethers";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -28,6 +29,7 @@ import {
   checkVisibility,
   VisibilityLevel,
 } from "@/contracts/visibility";
+import { parsePublicKeyFromDescription } from "@/utils/paillierVoting";
 import { useVotingFactory, type VotingDetails } from "@/hooks/useVotingFactory";
 import { useStatisticsCenter } from "@/hooks/useStatisticsCenter";
 import {
@@ -662,6 +664,9 @@ interface ProposalCardProps {
   onRegisterWeighted: (proposalId: number, groupIndex: number) => void;
   onVote: (proposalId: number, optionIndex: number) => void;
   onVoteAnonymous?: (proposalId: number, optionIndex: number) => void;
+  onVoteEncrypted?: (proposalId: number, optionIndex: number) => void;
+  onVoteFullPrivacy?: (proposalId: number, optionIndex: number) => void;
+  onVoteFullPrivacyWeighted?: (proposalId: number, optionIndex: number, groupIndex: number) => void;
   onVoteAnonymousRanked?: (proposalId: number, rankedOptions: number[]) => void;
   onVoteAnonymousQuadratic?: (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => void;
   onQuadraticVote: (proposalId: number, optionIndexes: number[], voteAmounts: number[]) => void;
@@ -855,7 +860,7 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCanExecuteProposal, onExecuteProposal, onCancelTimelock, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteEncrypted, onVoteFullPrivacy, onVoteFullPrivacyWeighted, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCanExecuteProposal, onExecuteProposal, onCancelTimelock, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
@@ -1744,11 +1749,23 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                   <VoteDialog 
                     options={proposal.options}
                     votingRule={proposal.rule}
-                    onVote={
-                      (proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy) && onVoteAnonymous
-                        ? (optionIndex) => onVoteAnonymous(proposal.id, optionIndex)
-                        : (optionIndex) => onVote(proposal.id, optionIndex)
-                    }
+                    onVote={(optionIndex) => {
+                      if (proposal.privacy === PrivacyLevel.Encrypted && onVoteEncrypted) {
+                        onVoteEncrypted(proposal.id, optionIndex);
+                      } else if (proposal.privacy === PrivacyLevel.FullPrivacy && proposal.rule === VotingRule.Weighted && onVoteFullPrivacyWeighted) {
+                        const groupIndex = parseInt(localStorage.getItem(`semaphore-weight-group-${wallet.address!.toLowerCase()}-${proposal.id}`) ?? "-1", 10);
+                        if (groupIndex >= 0) onVoteFullPrivacyWeighted(proposal.id, optionIndex, groupIndex);
+                        else if (onVoteFullPrivacy) onVoteFullPrivacy(proposal.id, optionIndex);
+                        else if (onVoteAnonymous) onVoteAnonymous(proposal.id, optionIndex);
+                        else onVote(proposal.id, optionIndex);
+                      } else if (proposal.privacy === PrivacyLevel.FullPrivacy && onVoteFullPrivacy) {
+                        onVoteFullPrivacy(proposal.id, optionIndex);
+                      } else if ((proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy) && onVoteAnonymous) {
+                        onVoteAnonymous(proposal.id, optionIndex);
+                      } else {
+                        onVote(proposal.id, optionIndex);
+                      }
+                    }}
                     onQuadraticVote={(optionIndexes, voteAmounts) => {
                       const isAnon = proposal.privacy === PrivacyLevel.Anonymous || proposal.privacy === PrivacyLevel.FullPrivacy;
                       if (isAnon && onVoteAnonymousQuadratic) onVoteAnonymousQuadratic(proposal.id, optionIndexes, voteAmounts);
@@ -2466,6 +2483,21 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [isOpen, setIsOpen] = useState(false);
   const [step, setStep] = useState(1);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [uiSections, setUiSections] = useState<{
+    votingRule: boolean;
+    visibility: boolean;
+    registration: boolean;
+    whitelist: boolean;
+    execution: boolean;
+    timing: boolean;
+  }>({
+    votingRule: true,
+    visibility: false,
+    registration: true,
+    whitelist: false,
+    execution: false,
+    timing: true,
+  });
   
   // 表单状态
   const [title, setTitle] = useState("");
@@ -2539,6 +2571,44 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [executionMultisig, setExecutionMultisig] = useState("");
   const [executionTimelockDelay, setExecutionTimelockDelay] = useState(86400); // 默认 1 天
 
+  const normalizeAddress = useCallback((input: string): string | null => {
+    const s = input.trim();
+    if (!s) return null;
+    if (!isAddress(s)) return null;
+    try {
+      return getAddress(s);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const parseAddressList = useCallback(
+    (text: string): { valid: string[]; invalid: string[] } => {
+      const tokens = text
+        .split(/[\n,;\s]+/)
+        .map((t) => t.trim())
+        .filter(Boolean);
+
+      const valid: string[] = [];
+      const invalid: string[] = [];
+
+      for (const t of tokens) {
+        const addr = normalizeAddress(t);
+        if (addr) valid.push(addr);
+        else invalid.push(t);
+      }
+
+      // 去重但保留顺序
+      const seen = new Set<string>();
+      const uniqueValid = valid.filter((a) =>
+        seen.has(a) ? false : (seen.add(a), true)
+      );
+
+      return { valid: uniqueValid, invalid };
+    },
+    [normalizeAddress]
+  );
+
   const resetForm = () => {
     setTitle("");
     setDescription("");
@@ -2585,6 +2655,14 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     setThresholdCommitteeInput("");
     setThresholdT(1);
     setStep(1);
+    setUiSections({
+      votingRule: true,
+      visibility: false,
+      registration: true,
+      whitelist: false,
+      execution: false,
+      timing: true,
+    });
   };
 
   // 处理 Enter 键跳转到下一步
@@ -2629,6 +2707,39 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     if (!wallet.isConnected) {
       showToast("warning", "请先连接钱包");
       return;
+    }
+
+    const titleTrim = title.trim();
+    const descTrim = description.trim();
+    const optionTrim = options.map((o) => o.trim());
+    const optionLower = optionTrim.map((o) => o.toLowerCase());
+
+    if (!titleTrim || !descTrim) {
+      showToast("error", "请填写基本信息", "标题和描述不能为空");
+      return;
+    }
+    if (optionTrim.length < 2 || optionTrim.length > 6 || optionTrim.some((o) => !o)) {
+      showToast("error", "投票选项无效", "选项需为 2-6 个，且不能为空");
+      return;
+    }
+    if (new Set(optionLower).size !== optionLower.length) {
+      showToast("error", "投票选项重复", "请确保每个选项文本不重复（不区分大小写）");
+      return;
+    }
+    if (rule === VotingRule.Weighted) {
+      const names = weightGroups.map((g) => g.name.trim());
+      if (names.some((n) => !n)) {
+        showToast("error", "权重分组无效", "分组名称不能为空");
+        return;
+      }
+      if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) {
+        showToast("error", "权重分组重复", "请确保分组名称不重复");
+        return;
+      }
+      if (weightGroups.some((g) => !Number.isFinite(g.weight) || g.weight < 1 || g.weight > 100)) {
+        showToast("error", "权重值无效", "权重需在 1-100 之间");
+        return;
+      }
     }
 
     setIsSubmitting(true);
@@ -2687,7 +2798,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     });
 
     if (executionMode !== ExecutionMode.None) {
-      if (!executionTarget || executionTarget.length < 40) {
+      if (!normalizeAddress(executionTarget)) {
         showToast("error", "执行机制需填写目标合约地址");
         setIsSubmitting(false);
         return;
@@ -2699,19 +2810,34 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
         setIsSubmitting(false);
         return;
       }
-      if (executionMode === ExecutionMode.MultiSig && (!executionMultisig || executionMultisig.length < 40)) {
+      if (executionMode === ExecutionMode.MultiSig && !normalizeAddress(executionMultisig)) {
         showToast("error", "多签模式需填写多签钱包地址");
         setIsSubmitting(false);
         return;
       }
     }
 
+    if (
+      (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) &&
+      !normalizeAddress(tokenContractAddress)
+    ) {
+      showToast("error", "合约地址无效", "请填写正确的 NFT/Token 合约地址");
+      setIsSubmitting(false);
+      return;
+    }
+
+    if (enableWhitelist && whitelist.length > 200) {
+      showToast("error", "白名单数量过多", "当前限制为 200 个地址，请减少后再创建");
+      setIsSubmitting(false);
+      return;
+    }
+
     // 加密/完全隐私且启用阈值解密：提交前解析委员会并校验
     let finalCommittee = thresholdCommittee;
     if ((privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption) {
       if (thresholdCommitteeInput.trim()) {
-        const parsed = thresholdCommitteeInput.split(/[\n,;\s]+/).map((a) => a.trim()).filter((a) => a.length >= 42);
-        finalCommittee = parsed.slice(0, 50);
+        const parsed = parseAddressList(thresholdCommitteeInput);
+        finalCommittee = parsed.valid.slice(0, 50);
       }
       if (finalCommittee.length === 0) {
         showToast("error", "请填写委员会成员地址", "启用阈值解密时至少需要 1 个委员会地址");
@@ -2727,9 +2853,9 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     }
 
     const newProposal: CreateProposalData = {
-      title,
-      description,
-      options,
+      title: titleTrim,
+      description: descTrim,
+      options: optionTrim,
       status: VotingState.Registration,
       endTime: useBlockNumber ? `Block ${voteEnd}` : new Date(voteEnd * 1000).toISOString(),
       privacy: privacy as PrivacyLevel,
@@ -2742,7 +2868,9 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       allowExtension,
       visibilityBitmap,
       enableWhitelist,
-      whitelist,
+      whitelist: whitelist
+        .map((a) => normalizeAddress(a))
+        .filter((a): a is string => a != null),
       whitelistGroupIndexes: (rule === VotingRule.Weighted && enableWhitelist)
         ? whitelist.map(addr => whitelistGroupMap[addr] ?? 0)
         : [],
@@ -2750,7 +2878,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       weightGroupWeights: rule === VotingRule.Weighted ? weightGroups.map(g => g.weight) : [],
       registrationRule: registrationRule as RegistrationRule,
       tokenContractAddress: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
-        ? tokenContractAddress : "0x0000000000000000000000000000000000000000",
+        ? (normalizeAddress(tokenContractAddress) ?? tokenContractAddress)
+        : "0x0000000000000000000000000000000000000000",
       tokenMinBalance: (registrationRule === RegistrationRule.NFTHolder || registrationRule === RegistrationRule.TokenHolder) 
         ? tokenMinBalance : 0,
       useBlockNumber: useBlockNumber || undefined,
@@ -2950,7 +3079,13 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                         type="text"
                         value={option}
                         onChange={(e) => handleOptionChange(index, e.target.value)}
-                        onKeyDown={(e) => handleKeyDown(e, 2, !options.some(o => !o.trim()))}
+                        onKeyDown={(e) => {
+                          const trimmed = options.map((o) => o.trim());
+                          const lower = trimmed.map((o) => o.toLowerCase());
+                          const ok =
+                            !trimmed.some((o) => !o) && new Set(lower).size === lower.length;
+                          handleKeyDown(e, 2, ok);
+                        }}
                         placeholder={`选项 ${index + 1}`}
                         className="flex-1 px-4 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none transition-colors"
                       />
@@ -2972,6 +3107,16 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                       + 添加选项
                     </button>
                   )}
+                  {(() => {
+                    const trimmed = options.map((o) => o.trim());
+                    const lower = trimmed.map((o) => o.toLowerCase());
+                    const hasDup = new Set(lower).size !== lower.length;
+                    return hasDup ? (
+                      <p className="text-xs text-rose-400">
+                        选项文本不能重复（不区分大小写）。
+                      </p>
+                    ) : null;
+                  })()}
                 </div>
                 <div className="flex gap-2">
                   <Button
@@ -2983,7 +3128,14 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                   </Button>
                   <Button
                     onClick={() => setStep(3)}
-                    disabled={options.some(o => !o.trim())}
+                    disabled={(() => {
+                      const trimmed = options.map((o) => o.trim());
+                      const lower = trimmed.map((o) => o.toLowerCase());
+                      return (
+                        trimmed.some((o) => !o) ||
+                        new Set(lower).size !== lower.length
+                      );
+                    })()}
                     className="flex-1 bg-gradient-to-r from-violet-500 to-fuchsia-500 hover:from-violet-600 hover:to-fuchsia-600 disabled:opacity-50"
                   >
                     下一步
@@ -2996,232 +3148,319 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
             {step === 3 && (
               <>
                 <div className="space-y-4">
-                  {/* 投票规则和隐私级别 - 并排布局 */}
-                  <div className="grid grid-cols-2 gap-4">
-                    {/* 投票规则 */}
-                    <div className="space-y-2">
-                      <label className="text-sm text-zinc-300">
-                        投票规则
-                      </label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {[
-                          { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
-                          { value: VotingRule.Weighted, label: "加权投票", desc: "为不同选民设置不同权重" },
-                          { value: VotingRule.Quadratic, label: "二次方投票", desc: "100积分自由分配，投票越集中成本越高" },
-                          { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序选项，逐轮淘汰最低票" },
-                        ].map((r) => {
-                          const isAnonymous = privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy;
-                          const anonymousSupported = [VotingRule.SimpleMajority, VotingRule.Weighted, VotingRule.Quadratic, VotingRule.RankedChoice] as const;
-                          const disabled = isAnonymous && !(anonymousSupported as readonly number[]).includes(r.value);
-                          return (
-                            <button
-                              key={r.value}
-                              onClick={() => {
-                                if (disabled) return;
-                                setRule(r.value);
-                              }}
-                              disabled={disabled}
-                              className={`p-2 rounded-lg border-2 text-left transition-all ${
-                                rule === r.value
-                                  ? "border-violet-500 bg-violet-500/10"
-                                  : disabled
-                                    ? "border-zinc-800 bg-zinc-900/50 opacity-50 cursor-not-allowed"
-                                    : "border-zinc-800 hover:border-zinc-700"
-                              }`}
-                            >
-                              <p className="font-medium text-sm text-zinc-100">{r.label}</p>
-                              <p className="text-xs text-zinc-500">{r.desc}</p>
-                            </button>
-                          );
-                        })}
-                      </div>
+                  <div className="flex items-center justify-between gap-3 p-3 rounded-xl bg-zinc-800/40 border border-zinc-700">
+                    <div className="text-sm text-zinc-300">
+                      当前配置：<span className="text-zinc-100 font-medium">{ruleLabels[rule as VotingRule]}</span>{" "}
+                      · <span className="text-zinc-100 font-medium">{privacyLabels[privacy as PrivacyLevel]}</span>
+                      {enableWhitelist && <span className="text-zinc-400"> · 白名单 {whitelist.length}</span>}
                     </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setUiSections((prev) => {
+                          const allOpen = Object.values(prev).every(Boolean);
+                          const next = !allOpen;
+                          return {
+                            votingRule: next,
+                            visibility: next,
+                            registration: next,
+                            whitelist: next,
+                            execution: next,
+                            timing: next,
+                          };
+                        });
+                      }}
+                      className="text-xs px-2 py-1 rounded-lg border border-zinc-700 text-zinc-400 hover:text-zinc-200 hover:border-zinc-600 transition-colors shrink-0"
+                    >
+                      {Object.values(uiSections).every(Boolean) ? "收起全部" : "展开全部"}
+                    </button>
+                  </div>
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, votingRule: !s.votingRule }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="w-4 h-4 text-violet-300" />
+                        <span className="text-sm font-medium text-zinc-200">投票规则与隐私</span>
+                        <Badge className="bg-violet-500/15 text-violet-200 border border-violet-500/30">
+                          {ruleLabels[rule as VotingRule]}
+                        </Badge>
+                        <Badge className="bg-fuchsia-500/15 text-fuchsia-200 border border-fuchsia-500/30">
+                          {privacyLabels[privacy as PrivacyLevel]}
+                        </Badge>
+                      </div>
+                      <span className="text-xs text-zinc-500">{uiSections.votingRule ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.votingRule && (
+                      <div className="p-3 pt-1 space-y-4">
+                        {/* 投票规则和隐私级别 - 并排布局 */}
+                        <div className="grid grid-cols-2 gap-4">
+                          {/* 投票规则 */}
+                          <div className="space-y-2">
+                            <label className="text-sm text-zinc-300">
+                              投票规则
+                            </label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {[
+                                { value: VotingRule.SimpleMajority, label: "简单多数", desc: "票数最多者胜出" },
+                                { value: VotingRule.Weighted, label: "加权投票", desc: "为不同选民设置不同权重" },
+                                { value: VotingRule.Quadratic, label: "二次方投票", desc: "100积分自由分配，投票越集中成本越高" },
+                                { value: VotingRule.RankedChoice, label: "排序选择", desc: "按偏好排序选项，逐轮淘汰最低票" },
+                              ].map((r) => {
+                                const isAnonymous = privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy;
+                                const anonymousSupported = [VotingRule.SimpleMajority, VotingRule.Weighted, VotingRule.Quadratic, VotingRule.RankedChoice] as const;
+                                const disabled = isAnonymous && !(anonymousSupported as readonly number[]).includes(r.value);
+                                return (
+                                  <button
+                                    key={r.value}
+                                    onClick={() => {
+                                      if (disabled) return;
+                                      setRule(r.value);
+                                    }}
+                                    disabled={disabled}
+                                    className={`p-2 rounded-lg border-2 text-left transition-all ${
+                                      rule === r.value
+                                        ? "border-violet-500 bg-violet-500/10"
+                                        : disabled
+                                          ? "border-zinc-800 bg-zinc-900/50 opacity-50 cursor-not-allowed"
+                                          : "border-zinc-800 hover:border-zinc-700"
+                                    }`}
+                                  >
+                                    <p className="font-medium text-sm text-zinc-100">{r.label}</p>
+                                    <p className="text-xs text-zinc-500">{r.desc}</p>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
 
-                    {/* 加权投票：权重分组配置 */}
-                    {rule === VotingRule.Weighted && (
-                      <div className="col-span-2 space-y-2">
-                        <label className="text-sm text-zinc-300 flex items-center gap-2">
-                          <Crown className="w-4 h-4 text-amber-400" /> 权重分组
-                        </label>
-                        <p className="text-xs text-zinc-500">选民注册时选择分组，投票按分组权重计入票数</p>
-                        <div className="space-y-2">
-                          {weightGroups.map((group, idx) => (
-                            <div key={idx} className="flex items-center gap-2">
-                              <input
-                                type="text"
-                                value={group.name}
-                                onChange={(e) => {
-                                  const newGroups = [...weightGroups];
-                                  newGroups[idx].name = e.target.value;
-                                  setWeightGroups(newGroups);
-                                }}
-                                placeholder="分组名称"
-                                className="flex-1 px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
-                              />
-                              <div className="flex items-center gap-1">
-                                <span className="text-xs text-zinc-500">权重</span>
-                                <input
-                                  type="number"
-                                  min={1}
-                                  max={100}
-                                  value={group.weight}
-                                  onChange={(e) => {
-                                    const newGroups = [...weightGroups];
-                                    newGroups[idx].weight = Math.max(1, parseInt(e.target.value) || 1);
-                                    setWeightGroups(newGroups);
-                                  }}
-                                  className="w-16 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 text-center focus:border-violet-500 focus:outline-none"
-                                />
+                          {/* 加权投票：权重分组配置 */}
+                          {rule === VotingRule.Weighted && (
+                            <div className="col-span-2 space-y-2">
+                              <label className="text-sm text-zinc-300 flex items-center gap-2">
+                                <Crown className="w-4 h-4 text-amber-400" /> 权重分组
+                              </label>
+                              <p className="text-xs text-zinc-500">选民注册时选择分组，投票按分组权重计入票数</p>
+                              <div className="space-y-2">
+                                {weightGroups.map((group, idx) => (
+                                  <div key={idx} className="flex items-center gap-2">
+                                    <input
+                                      type="text"
+                                      value={group.name}
+                                      onChange={(e) => {
+                                        const newGroups = [...weightGroups];
+                                        newGroups[idx].name = e.target.value;
+                                        setWeightGroups(newGroups);
+                                      }}
+                                      placeholder="分组名称"
+                                      className="flex-1 px-3 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
+                                    />
+                                    <div className="flex items-center gap-1">
+                                      <span className="text-xs text-zinc-500">权重</span>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        max={100}
+                                        value={group.weight}
+                                        onChange={(e) => {
+                                          const newGroups = [...weightGroups];
+                                          newGroups[idx].weight = Math.max(1, parseInt(e.target.value) || 1);
+                                          setWeightGroups(newGroups);
+                                        }}
+                                        className="w-16 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 text-center focus:border-violet-500 focus:outline-none"
+                                      />
+                                    </div>
+                                    {weightGroups.length > 1 && (
+                                      <button
+                                        onClick={() => setWeightGroups(weightGroups.filter((_, i) => i !== idx))}
+                                        className="p-1 text-zinc-500 hover:text-red-400 transition-colors"
+                                      >
+                                        <X className="w-4 h-4" />
+                                      </button>
+                                    )}
+                                  </div>
+                                ))}
                               </div>
-                              {weightGroups.length > 1 && (
+                              {weightGroups.length < 8 && (
                                 <button
-                                  onClick={() => setWeightGroups(weightGroups.filter((_, i) => i !== idx))}
-                                  className="p-1 text-zinc-500 hover:text-red-400 transition-colors"
+                                  onClick={() => setWeightGroups([...weightGroups, { name: "", weight: 1 }])}
+                                  className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
                                 >
-                                  <X className="w-4 h-4" />
+                                  + 添加分组
                                 </button>
                               )}
                             </div>
-                          ))}
+                          )}
+
+                          {/* 隐私级别 */}
+                          <div className="space-y-2">
+                            <label className="text-sm text-zinc-300">隐私级别</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {[
+                                { value: PrivacyLevel.Public, label: "公开投票", icon: Eye },
+                                { value: PrivacyLevel.Anonymous, label: "匿名投票", icon: EyeOff },
+                                { value: PrivacyLevel.Encrypted, label: "加密投票", icon: Lock },
+                                { value: PrivacyLevel.FullPrivacy, label: "完全隐私", icon: ShieldCheck },
+                              ].map((p) => (
+                                <button
+                                  key={p.value}
+                                  onClick={() => {
+                                    setPrivacy(p.value);
+                                    if (p.value === PrivacyLevel.Anonymous || p.value === PrivacyLevel.FullPrivacy) {
+                                      setRule(VotingRule.SimpleMajority);
+                                      setRegistrationRule(RegistrationRule.Open);
+                                      setEnableWhitelist(false);
+                                    }
+                                  }}
+                                  className={`p-2 rounded-lg border-2 text-left transition-all ${
+                                    privacy === p.value
+                                      ? "border-fuchsia-500 bg-fuchsia-500/10"
+                                      : "border-zinc-800 hover:border-zinc-700"
+                                  }`}
+                                >
+                                  <p.icon className="w-4 h-4 text-zinc-300" />
+                                  <p className="font-medium text-sm text-zinc-100 mt-1">{p.label}</p>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
                         </div>
-                        {weightGroups.length < 8 && (
-                          <button
-                            onClick={() => setWeightGroups([...weightGroups, { name: "", weight: 1 }])}
-                            className="text-xs text-violet-400 hover:text-violet-300 transition-colors"
-                          >
-                            + 添加分组
-                          </button>
-                        )}
-                      </div>
-                    )}
 
-                    {/* 隐私级别 */}
-                    <div className="space-y-2">
-                      <label className="text-sm text-zinc-300">隐私级别</label>
-                      <div className="grid grid-cols-2 gap-2">
-                        {[
-                          { value: PrivacyLevel.Public, label: "公开投票", icon: Eye },
-                          { value: PrivacyLevel.Anonymous, label: "匿名投票", icon: EyeOff },
-                          { value: PrivacyLevel.Encrypted, label: "加密投票", icon: Lock },
-                          { value: PrivacyLevel.FullPrivacy, label: "完全隐私", icon: ShieldCheck },
-                        ].map((p) => (
-                          <button
-                            key={p.value}
-                            onClick={() => {
-                              setPrivacy(p.value);
-                              if (p.value === PrivacyLevel.Anonymous || p.value === PrivacyLevel.FullPrivacy) {
-                                setRule(VotingRule.SimpleMajority);
-                                setRegistrationRule(RegistrationRule.Open);
-                                setEnableWhitelist(false);
-                              }
-                            }}
-                            className={`p-2 rounded-lg border-2 text-left transition-all ${
-                              privacy === p.value
-                                ? "border-fuchsia-500 bg-fuchsia-500/10"
-                                : "border-zinc-800 hover:border-zinc-700"
-                            }`}
-                          >
-                            <p.icon className="w-4 h-4 text-zinc-300" />
-                            <p className="font-medium text-sm text-zinc-100 mt-1">{p.label}</p>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    </div>
-
-                    {/* 加密/完全隐私：阈值解密选项 */}
-                    {(privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && (
-                      <div className="space-y-2 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-                        <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                          <Lock className="w-4 h-4" /> 阈值解密（可选）
-                        </p>
-                        <p className="text-xs text-zinc-500">
-                          启用后，计票结果需由 t-of-n 委员会成员确认后才生效，避免单点信任。
-                        </p>
-                        <label className="flex items-center gap-2 cursor-pointer">
-                          <input
-                            type="checkbox"
-                            checked={useThresholdDecryption}
-                            onChange={(e) => setUseThresholdDecryption(e.target.checked)}
-                            className="rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-violet-500"
-                          />
-                          <span className="text-sm text-zinc-300">使用阈值解密（委员会 t-of-n 确认）</span>
-                        </label>
-                        {useThresholdDecryption && (
-                          <div className="space-y-2 pl-6 border-l-2 border-violet-500/30">
-                            <div>
-                              <label className="text-xs text-zinc-400">委员会成员地址（每行一个，最多 50 个）</label>
-                              <textarea
-                                value={thresholdCommitteeInput}
-                                onChange={(e) => setThresholdCommitteeInput(e.target.value)}
-                                onBlur={() => {
-                                  const addrs = thresholdCommitteeInput.split(/[\n,;\s]+/).filter((a) => a.trim().length >= 42);
-                                  if (addrs.length > 0) setThresholdCommittee(addrs.slice(0, 50).map((a) => a.trim()));
-                                }}
-                                placeholder="0x..."
-                                className="mt-1 w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none min-h-[80px]"
-                              />
-                              {thresholdCommittee.length > 0 && (
-                                <p className="text-xs text-zinc-500 mt-1">已解析 {thresholdCommittee.length} 个地址</p>
-                              )}
-                            </div>
-                            <div>
-                              <label className="text-xs text-zinc-400">阈值 t（至少 t 人确认后结果生效，1 ≤ t ≤ 委员会人数）</label>
+                        {/* 加密/完全隐私：阈值解密选项 */}
+                        {(privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && (
+                          <div className="space-y-2 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
+                            <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                              <Lock className="w-4 h-4" /> 阈值解密（可选）
+                            </p>
+                            <p className="text-xs text-zinc-500">
+                              启用后，计票结果需由 t-of-n 委员会成员确认后才生效，避免单点信任。
+                            </p>
+                            <label className="flex items-center gap-2 cursor-pointer">
                               <input
-                                type="number"
-                                min={1}
-                                max={Math.max(1, thresholdCommittee.length)}
-                                value={thresholdT}
-                                onChange={(e) => setThresholdT(Math.max(1, Math.min(thresholdCommittee.length || 1, parseInt(e.target.value) || 1)))}
-                                className="mt-1 w-24 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
+                                type="checkbox"
+                                checked={useThresholdDecryption}
+                                onChange={(e) => setUseThresholdDecryption(e.target.checked)}
+                                className="rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-violet-500"
                               />
-                            </div>
+                              <span className="text-sm text-zinc-300">使用阈值解密（委员会 t-of-n 确认）</span>
+                            </label>
+                            {useThresholdDecryption && (
+                              <div className="space-y-2 pl-6 border-l-2 border-violet-500/30">
+                                <div>
+                                  <label className="text-xs text-zinc-400">委员会成员地址（每行一个，最多 50 个）</label>
+                                  <textarea
+                                    value={thresholdCommitteeInput}
+                                    onChange={(e) => setThresholdCommitteeInput(e.target.value)}
+                                    onBlur={() => {
+                                      const parsed = parseAddressList(thresholdCommitteeInput);
+                                      if (parsed.invalid.length > 0) {
+                                        showToast("warning", "存在无效地址", `已忽略 ${parsed.invalid.length} 个无效的委员会地址`);
+                                      }
+                                      if (parsed.valid.length > 0) setThresholdCommittee(parsed.valid.slice(0, 50));
+                                    }}
+                                    placeholder="0x..."
+                                    className="mt-1 w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none min-h-[80px]"
+                                  />
+                                  {thresholdCommittee.length > 0 && (
+                                    <p className="text-xs text-zinc-500 mt-1">已解析 {thresholdCommittee.length} 个地址</p>
+                                  )}
+                                </div>
+                                <div>
+                                  <label className="text-xs text-zinc-400">阈值 t（至少 t 人确认后结果生效，1 ≤ t ≤ 委员会人数）</label>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={Math.max(1, thresholdCommittee.length)}
+                                    value={thresholdT}
+                                    onChange={(e) => setThresholdT(Math.max(1, Math.min(thresholdCommittee.length || 1, parseInt(e.target.value) || 1)))}
+                                    className="mt-1 w-24 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
+                                  />
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                       </div>
                     )}
-
-                  {/* 信息公开设置 - 配置驱动 */}
-                  <div className="p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-                    <p className="text-sm font-medium text-zinc-300 flex items-center gap-2 mb-3">
-                      <Eye className="w-4 h-4" /> 信息公开设置
-                    </p>
-                    
-                    {/* 表头 - 使用 visibilityOptions 配置 */}
-                    <div className="grid grid-cols-5 gap-2 mb-2 text-center">
-                      <div className="text-xs text-zinc-500">信息类型</div>
-                      {visibilityOptions.map((opt) => (
-                        <div key={opt.value} className="text-xs text-zinc-500 flex items-center justify-center gap-1">
-                          <opt.icon className="w-3 h-3" /> {opt.label}
-                        </div>
-                      ))}
-                    </div>
-
-                    {/* 可见性设置行 - 使用 visibilitySettings 配置 */}
-                    <div className="space-y-2">
-                      {visibilitySettings.map((item) => (
-                        <div key={item.key} className="grid grid-cols-5 gap-2 items-center">
-                          <div className="text-sm text-zinc-300">{item.label}</div>
-                          {visibilityOptions.map((opt) => (
-                            <button
-                              key={opt.value}
-                              onClick={() => item.setter(opt.value)}
-                              className={`p-2 rounded-lg border transition-all ${
-                                item.value === opt.value
-                                  ? "border-emerald-500 bg-emerald-500/20"
-                                  : "border-zinc-700 hover:border-zinc-600 bg-zinc-800/50"
-                              }`}
-                            >
-                              <div className={`w-3 h-3 mx-auto rounded-full ${
-                                item.value === opt.value ? "bg-emerald-500" : "bg-zinc-600"
-                              }`} />
-                            </button>
-                          ))}
-                        </div>
-                      ))}
-                    </div>
                   </div>
 
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, visibility: !s.visibility }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Eye className="w-4 h-4 text-emerald-300" />
+                        <span className="text-sm font-medium text-zinc-200">信息公开设置</span>
+                        <span className="text-xs text-zinc-500">（高级）</span>
+                      </div>
+                      <span className="text-xs text-zinc-500">{uiSections.visibility ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.visibility && (
+                      <div className="p-3 pt-1">
+                        {/* 表头 - 使用 visibilityOptions 配置 */}
+                        <div className="grid grid-cols-5 gap-2 mb-2 text-center">
+                          <div className="text-xs text-zinc-500">信息类型</div>
+                          {visibilityOptions.map((opt) => (
+                            <div key={opt.value} className="text-xs text-zinc-500 flex items-center justify-center gap-1">
+                              <opt.icon className="w-3 h-3" /> {opt.label}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* 可见性设置行 - 使用 visibilitySettings 配置 */}
+                        <div className="space-y-2">
+                          {visibilitySettings.map((item) => (
+                            <div key={item.key} className="grid grid-cols-5 gap-2 items-center">
+                              <div className="text-sm text-zinc-300">{item.label}</div>
+                              {visibilityOptions.map((opt) => (
+                                <button
+                                  key={opt.value}
+                                  onClick={() => item.setter(opt.value)}
+                                  className={`p-2 rounded-lg border transition-all ${
+                                    item.value === opt.value
+                                      ? "border-emerald-500 bg-emerald-500/20"
+                                      : "border-zinc-700 hover:border-zinc-600 bg-zinc-800/50"
+                                  }`}
+                                >
+                                  <div className={`w-3 h-3 mx-auto rounded-full ${
+                                    item.value === opt.value ? "bg-emerald-500" : "bg-zinc-600"
+                                  }`} />
+                                </button>
+                              ))}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, registration: !s.registration }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <UserCheck className="w-4 h-4 text-cyan-300" />
+                        <span className="text-sm font-medium text-zinc-200">准入与注册</span>
+                        <span className="text-xs text-zinc-500">
+                          {registrationRule === RegistrationRule.Open
+                            ? "开放注册"
+                            : registrationRule === RegistrationRule.Approval
+                              ? "创建者审核"
+                              : registrationRule === RegistrationRule.NFTHolder
+                                ? "NFT 持有者"
+                                : "Token 持有者"}
+                        </span>
+                      </div>
+                      <span className="text-xs text-zinc-500">{uiSections.registration ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.registration && (
+                      <div className="p-3 pt-1 space-y-3">
                   {/* 注册规则 - 匿名投票仅支持开放注册 */}
                   <div className={`space-y-2 ${(privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy) ? "opacity-75" : ""}`}>
                     <label className="text-sm text-zinc-300">
@@ -3345,228 +3584,229 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                       </div>
                     </div>
                   )}
-
-                  {/* 白名单开关与配置 - 匿名投票不支持 */}
-                  {privacy !== PrivacyLevel.Anonymous && privacy !== PrivacyLevel.FullPrivacy && (
-                  <div className="space-y-2">
-                    <div className="flex items-center justify-between">
-                      <label className="text-sm text-zinc-300 flex items-center gap-2">
-                        <Users className="w-4 h-4" /> 白名单限制
-                      </label>
-                      <button
-                        onClick={() => setEnableWhitelist(!enableWhitelist)}
-                        className={`relative w-11 h-6 rounded-full transition-colors ${
-                          enableWhitelist ? "bg-cyan-500" : "bg-zinc-700"
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                            enableWhitelist ? "left-6" : "left-1"
-                          }`}
-                        />
-                      </button>
-                    </div>
-                    <p className="text-xs text-zinc-500">
-                      启用后，白名单内地址可无视注册规则参与投票
-                    </p>
-                  </div>
-                  )}
-
-                  {/* 白名单地址导入 - 启用白名单时显示 */}
-                  {enableWhitelist && (
-                    <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-cyan-500/30">
-                      <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                        <Upload className="w-4 h-4" /> 白名单地址导入
-                        {rule === VotingRule.Weighted && (
-                          <span className="text-xs text-cyan-400 ml-1">（按权重分组分配）</span>
-                        )}
-                      </p>
-
-                      {/* 加权投票模式：分组 Tab */}
-                      {rule === VotingRule.Weighted && weightGroups.length > 0 && (
-                        <div className="flex gap-1 p-1 rounded-lg bg-zinc-900">
-                          {weightGroups.map((group, gIdx) => {
-                            const groupCount = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === gIdx).length;
-                            return (
+                  
+                  {/* 白名单（准入与注册 - 子块，匿名模式不支持） */}
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, whitelist: !s.whitelist }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Users className="w-4 h-4 text-cyan-300" />
+                        <span className="text-sm font-medium text-zinc-200">白名单</span>
+                        <span className="text-xs text-zinc-500">
+                          {privacy === PrivacyLevel.Anonymous || privacy === PrivacyLevel.FullPrivacy
+                            ? "匿名模式不支持"
+                            : enableWhitelist
+                              ? `已启用（${whitelist.length}）`
+                              : "未启用"}
+                        </span>
+                      </div>
+                      <span className="text-xs text-zinc-500">{uiSections.whitelist ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.whitelist && (
+                      <div className="p-3 pt-1 space-y-3">
+                        {/* 白名单开关与配置 - 匿名投票不支持 */}
+                        {privacy !== PrivacyLevel.Anonymous && privacy !== PrivacyLevel.FullPrivacy && (
+                          <div className="space-y-2">
+                            <div className="flex items-center justify-between">
+                              <label className="text-sm text-zinc-300 flex items-center gap-2">
+                                <Users className="w-4 h-4" /> 白名单限制
+                              </label>
                               <button
-                                key={gIdx}
-                                onClick={() => setWhitelistActiveGroup(gIdx)}
-                                className={`flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                                  whitelistActiveGroup === gIdx
-                                    ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
-                                    : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                                onClick={() => setEnableWhitelist(!enableWhitelist)}
+                                className={`relative w-11 h-6 rounded-full transition-colors ${
+                                  enableWhitelist ? "bg-cyan-500" : "bg-zinc-700"
                                 }`}
                               >
-                                {group.name} (×{group.weight})
-                                {groupCount > 0 && (
-                                  <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/30 text-cyan-300">
-                                    {groupCount}
-                                  </span>
-                                )}
+                                <span
+                                  className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                                    enableWhitelist ? "left-6" : "left-1"
+                                  }`}
+                                />
                               </button>
-                            );
-                          })}
-                        </div>
-                      )}
-                      
-                      {/* 输入区域 */}
-                      <div className="space-y-2">
-                        <textarea
-                          value={whitelistInput}
-                          onChange={(e) => setWhitelistInput(e.target.value)}
-                          placeholder={rule === VotingRule.Weighted
-                            ? `输入要加入「${weightGroups[whitelistActiveGroup]?.name || ""}」分组的地址，每行一个或用逗号分隔`
-                            : "输入钱包地址，每行一个或用逗号分隔\n例如：\n0x1234...\n0x5678..."}
-                          rows={4}
-                          className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none transition-colors resize-none text-sm font-mono"
-                        />
-                        <div className="flex gap-2">
-                          <Button
-                            onClick={() => {
-                              const addresses = whitelistInput
-                                .split(/[\n,]/)
-                                .map(a => a.trim())
-                                .filter(a => a.length > 0 && a.startsWith("0x"));
-                              const uniqueAddresses = [...new Set([...whitelist, ...addresses])];
-                              setWhitelist(uniqueAddresses);
-                              // 加权模式下，为新增地址设置分组
-                              if (rule === VotingRule.Weighted) {
-                                const newMap = { ...whitelistGroupMap };
-                                addresses.forEach(addr => {
-                                  if (!(addr in newMap)) {
-                                    newMap[addr] = whitelistActiveGroup;
-                                  }
-                                });
-                                setWhitelistGroupMap(newMap);
-                              }
-                              setWhitelistInput("");
-                            }}
-                            disabled={!whitelistInput.trim()}
-                            className="flex-1 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50"
-                          >
-                            添加地址
-                          </Button>
-                          <Button
-                            onClick={() => {
-                              if (rule === VotingRule.Weighted) {
-                                // 加权模式：仅清空当前分组的地址
-                                const groupAddrs = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup);
-                                const remaining = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) !== whitelistActiveGroup);
-                                const newMap = { ...whitelistGroupMap };
-                                groupAddrs.forEach(addr => delete newMap[addr]);
-                                setWhitelist(remaining);
-                                setWhitelistGroupMap(newMap);
-                              } else {
-                                setWhitelist([]);
-                              }
-                            }}
-                            disabled={rule === VotingRule.Weighted
-                              ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length === 0
-                              : whitelist.length === 0}
-                            variant="outline"
-                            className="border-zinc-700 text-zinc-400 hover:text-rose-400 hover:border-rose-500 disabled:opacity-50"
-                          >
-                            {rule === VotingRule.Weighted ? "清空本组" : "清空"}
-                          </Button>
-                        </div>
-                      </div>
-
-                      {/* 已添加的地址列表 */}
-                      {whitelist.length > 0 && (
-                        <div className="space-y-2">
-                          <p className={`text-xs ${whitelist.length > 200 ? "text-rose-400" : "text-zinc-400"}`}>
-                            {rule === VotingRule.Weighted
-                              ? `共 ${whitelist.length} 个地址（当前分组 ${whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length} 个）`
-                              : `已添加 ${whitelist.length} 个地址`}
-                            {whitelist.length > 200 && " (超过 200 限制，请减少)"}
-                          </p>
-                          <div className="max-h-32 overflow-y-auto space-y-1 pr-1">
-                            {(rule === VotingRule.Weighted
-                              ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup)
-                              : whitelist
-                            ).map((addr) => (
-                              <div
-                                key={addr}
-                                className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 group"
-                              >
-                                <span className="text-xs font-mono text-zinc-300 truncate flex-1">
-                                  {addr.slice(0, 10)}...{addr.slice(-8)}
-                                </span>
-                                {rule === VotingRule.Weighted && (
-                                  <span className="text-xs text-cyan-400 mx-2">
-                                    {weightGroups[whitelistGroupMap[addr] ?? 0]?.name}
-                                  </span>
-                                )}
-                                <button
-                                  onClick={() => {
-                                    setWhitelist(whitelist.filter(a => a !== addr));
-                                    const newMap = { ...whitelistGroupMap };
-                                    delete newMap[addr];
-                                    setWhitelistGroupMap(newMap);
-                                  }}
-                                  className="ml-2 p-1 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ))}
+                            </div>
+                            <p className="text-xs text-zinc-500">
+                              启用后，白名单内地址可无视注册规则参与投票
+                            </p>
                           </div>
-                        </div>
-                      )}
-                    </div>
-                  )}
+                        )}
 
-                  {/* 推进模式 */}
-                  <div className="space-y-2">
-                    <label className="text-sm text-zinc-300">状态推进模式</label>
-                    <div className="grid grid-cols-2 gap-3">
-                      <button
-                        onClick={() => setAutoAdvance(true)}
-                        className={`p-2 rounded-lg border-2 text-left transition-all ${
-                          autoAdvance
-                            ? "border-emerald-500 bg-emerald-500/10"
-                            : "border-zinc-800 hover:border-zinc-700"
-                        }`}
-                      >
-                        <p className="font-medium text-sm text-zinc-100">自动推进</p>
-                        <p className="text-xs text-zinc-500">到达时间自动切换状态</p>
-                      </button>
-                      <button
-                        onClick={() => setAutoAdvance(false)}
-                        className={`p-2 rounded-lg border-2 text-left transition-all ${
-                          !autoAdvance
-                            ? "border-amber-500 bg-amber-500/10"
-                            : "border-zinc-800 hover:border-zinc-700"
-                        }`}
-                      >
-                        <p className="font-medium text-sm text-zinc-100">手动推进</p>
-                        <p className="text-xs text-zinc-500">创建者随时可推进</p>
-                      </button>
-                    </div>
+                        {/* 白名单地址导入 - 启用白名单时显示 */}
+                        {enableWhitelist && (
+                          <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-cyan-500/30">
+                            <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                              <Upload className="w-4 h-4" /> 白名单地址导入
+                              {rule === VotingRule.Weighted && (
+                                <span className="text-xs text-cyan-400 ml-1">（按权重分组分配）</span>
+                              )}
+                            </p>
+
+                            {/* 加权投票模式：分组 Tab */}
+                            {rule === VotingRule.Weighted && weightGroups.length > 0 && (
+                              <div className="flex gap-1 p-1 rounded-lg bg-zinc-900">
+                                {weightGroups.map((group, gIdx) => {
+                                  const groupCount = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === gIdx).length;
+                                  return (
+                                    <button
+                                      key={gIdx}
+                                      onClick={() => setWhitelistActiveGroup(gIdx)}
+                                      className={`flex-1 px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+                                        whitelistActiveGroup === gIdx
+                                          ? "bg-cyan-500/20 text-cyan-300 border border-cyan-500/40"
+                                          : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800"
+                                      }`}
+                                    >
+                                      {group.name} (×{group.weight})
+                                      {groupCount > 0 && (
+                                        <span className="ml-1 px-1.5 py-0.5 rounded-full bg-cyan-500/30 text-cyan-300">
+                                          {groupCount}
+                                        </span>
+                                      )}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            
+                            {/* 输入区域 */}
+                            <div className="space-y-2">
+                              <textarea
+                                value={whitelistInput}
+                                onChange={(e) => setWhitelistInput(e.target.value)}
+                                placeholder={rule === VotingRule.Weighted
+                                  ? `输入要加入「${weightGroups[whitelistActiveGroup]?.name || ""}」分组的地址，每行一个或用逗号分隔`
+                                  : "输入钱包地址，每行一个或用逗号分隔\n例如：\n0x1234...\n0x5678..."}
+                                rows={4}
+                                className="w-full px-3 py-2 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-100 placeholder-zinc-500 focus:border-cyan-500 focus:outline-none transition-colors resize-none text-sm font-mono"
+                              />
+                              <div className="flex gap-2">
+                                <Button
+                                  onClick={() => {
+                                    const parsed = parseAddressList(whitelistInput);
+                                    if (parsed.invalid.length > 0) {
+                                      showToast("warning", "存在无效地址", `已忽略 ${parsed.invalid.length} 个无效的白名单地址`);
+                                    }
+                                    const addresses = parsed.valid;
+                                    const uniqueAddresses = [...new Set([...whitelist, ...addresses])];
+                                    setWhitelist(uniqueAddresses);
+                                    // 加权模式下，为新增地址设置分组
+                                    if (rule === VotingRule.Weighted) {
+                                      const newMap = { ...whitelistGroupMap };
+                                      addresses.forEach(addr => {
+                                        if (!(addr in newMap)) {
+                                          newMap[addr] = whitelistActiveGroup;
+                                        }
+                                      });
+                                      setWhitelistGroupMap(newMap);
+                                    }
+                                    setWhitelistInput("");
+                                  }}
+                                  disabled={!whitelistInput.trim()}
+                                  className="flex-1 bg-cyan-600 hover:bg-cyan-700 disabled:opacity-50"
+                                >
+                                  添加地址
+                                </Button>
+                                <Button
+                                  onClick={() => {
+                                    if (rule === VotingRule.Weighted) {
+                                      // 加权模式：仅清空当前分组的地址
+                                      const groupAddrs = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup);
+                                      const remaining = whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) !== whitelistActiveGroup);
+                                      const newMap = { ...whitelistGroupMap };
+                                      groupAddrs.forEach(addr => delete newMap[addr]);
+                                      setWhitelist(remaining);
+                                      setWhitelistGroupMap(newMap);
+                                    } else {
+                                      setWhitelist([]);
+                                    }
+                                  }}
+                                  disabled={rule === VotingRule.Weighted
+                                    ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length === 0
+                                    : whitelist.length === 0}
+                                  variant="outline"
+                                  className="border-zinc-700 text-zinc-400 hover:text-rose-400 hover:border-rose-500 disabled:opacity-50"
+                                >
+                                  {rule === VotingRule.Weighted ? "清空本组" : "清空"}
+                                </Button>
+                              </div>
+                            </div>
+
+                            {/* 已添加的地址列表 */}
+                            {whitelist.length > 0 && (
+                              <div className="space-y-2">
+                                <p className={`text-xs ${whitelist.length > 200 ? "text-rose-400" : "text-zinc-400"}`}>
+                                  {rule === VotingRule.Weighted
+                                    ? `共 ${whitelist.length} 个地址（当前分组 ${whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup).length} 个）`
+                                    : `已添加 ${whitelist.length} 个地址`}
+                                  {whitelist.length > 200 && " (超过 200 限制，请减少)"}
+                                </p>
+                                <div className="max-h-32 overflow-y-auto space-y-1 pr-1">
+                                  {(rule === VotingRule.Weighted
+                                    ? whitelist.filter(addr => (whitelistGroupMap[addr] ?? 0) === whitelistActiveGroup)
+                                    : whitelist
+                                  ).map((addr) => (
+                                    <div
+                                      key={addr}
+                                      className="flex items-center justify-between px-2 py-1.5 rounded-lg bg-zinc-900 border border-zinc-700 group"
+                                    >
+                                      <span className="text-xs font-mono text-zinc-300 truncate flex-1">
+                                        {addr.slice(0, 10)}...{addr.slice(-8)}
+                                      </span>
+                                      {rule === VotingRule.Weighted && (
+                                        <span className="text-xs text-cyan-400 mx-2">
+                                          {weightGroups[whitelistGroupMap[addr] ?? 0]?.name}
+                                        </span>
+                                      )}
+                                      <button
+                                        onClick={() => {
+                                          setWhitelist(whitelist.filter(a => a !== addr));
+                                          const newMap = { ...whitelistGroupMap };
+                                          delete newMap[addr];
+                                          setWhitelistGroupMap(newMap);
+                                        }}
+                                        className="ml-2 p-1 rounded hover:bg-rose-500/20 text-zinc-500 hover:text-rose-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                                      >
+                                        <X className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                      </div>
+                    )}
                   </div>
 
-                  {/* 动态延长机制 - 仅自动推进模式显示 */}
-                  {autoAdvance && (
-                    <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-                      <div>
-                        <p className="text-sm font-medium text-zinc-300">允许动态延长</p>
-                        <p className="text-xs text-zinc-500">创建者可在注册期/投票期内延长截止时间</p>
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, execution: !s.execution }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Shield className="w-4 h-4 text-cyan-300" />
+                        <span className="text-sm font-medium text-zinc-200">执行机制</span>
+                        <span className="text-xs text-zinc-500">
+                          {executionMode === ExecutionMode.None
+                            ? "链下通知"
+                            : executionMode === ExecutionMode.OnChainAuto
+                              ? "链上自动"
+                              : executionMode === ExecutionMode.MultiSig
+                                ? "多签触发"
+                                : "延迟执行"}
+                        </span>
                       </div>
-                      <button
-                        onClick={() => setAllowExtension(!allowExtension)}
-                        className={`relative w-11 h-6 rounded-full transition-colors ${
-                          allowExtension ? "bg-amber-500" : "bg-zinc-700"
-                        }`}
-                      >
-                        <span
-                          className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                            allowExtension ? "left-6" : "left-1"
-                          }`}
-                        />
-                      </button>
-                    </div>
-                  )}
-
+                      <span className="text-xs text-zinc-500">{uiSections.execution ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.execution && (
+                      <div className="p-3 pt-1 space-y-3">
                   {/* Step 6: 执行机制 */}
                   <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
                     <p className="text-sm font-medium text-zinc-300">执行机制</p>
@@ -3660,14 +3900,66 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                       </div>
                     )}
                   </div>
+                      </div>
+                    )}
+                  </div>
 
-                  {/* 时间配置 - 仅自动推进模式显示 */}
+                  <div className="rounded-xl bg-zinc-800/30 border border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => setUiSections((s) => ({ ...s, timing: !s.timing }))}
+                      className="w-full px-3 py-2 flex items-center justify-between"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Timer className="w-4 h-4 text-amber-300" />
+                        <span className="text-sm font-medium text-zinc-200">状态推进与时间</span>
+                        <span className="text-xs text-zinc-500">{autoAdvance ? "自动推进" : "手动推进"}</span>
+                      </div>
+                      <span className="text-xs text-zinc-500">{uiSections.timing ? "收起" : "展开"}</span>
+                    </button>
+                    {uiSections.timing && (
+                      <div className="p-3 pt-1 space-y-3">
+                        {/* 推进模式（顶部大开关） */}
+                        <div className="space-y-2">
+                          <label className="text-sm text-zinc-300">状态推进模式</label>
+                          <div className="grid grid-cols-2 gap-3">
+                            <button
+                              onClick={() => setAutoAdvance(true)}
+                              className={`p-2 rounded-lg border-2 text-left transition-all ${
+                                autoAdvance
+                                  ? "border-emerald-500 bg-emerald-500/10"
+                                  : "border-zinc-800 hover:border-zinc-700"
+                              }`}
+                            >
+                              <p className="font-medium text-sm text-zinc-100">自动推进</p>
+                              <p className="text-xs text-zinc-500">到达时间自动切换状态</p>
+                            </button>
+                            <button
+                              onClick={() => setAutoAdvance(false)}
+                              className={`p-2 rounded-lg border-2 text-left transition-all ${
+                                !autoAdvance
+                                  ? "border-amber-500 bg-amber-500/10"
+                                  : "border-zinc-800 hover:border-zinc-700"
+                              }`}
+                            >
+                              <p className="font-medium text-sm text-zinc-100">手动推进</p>
+                              <p className="text-xs text-zinc-500">创建者随时可推进</p>
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* 时间配置 & 动态延长 - 仅自动推进模式显示 */}
                   {autoAdvance && (
                     <div className="space-y-3 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
                       <div className="flex items-center justify-between flex-wrap gap-2">
-                        <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                          <Timer className="w-4 h-4" /> 时间配置（单位：{useBlockNumber ? "区块" : useSpecificDates ? "具体日期" : "分钟"}）
-                        </p>
+                        <div className="flex flex-col gap-1">
+                          <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
+                            <Timer className="w-4 h-4" /> 时间配置（单位：{useBlockNumber ? "区块" : useSpecificDates ? "具体日期" : "分钟"}）
+                          </p>
+                          <p className="text-xs text-zinc-500">
+                            按下方配置自动切换注册/投票/揭示阶段。
+                          </p>
+                        </div>
                         <div className="flex items-center gap-4">
                           {!useBlockNumber && (
                             <div className="flex rounded-lg overflow-hidden border border-zinc-600">
@@ -3713,6 +4005,27 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                         </div>
                       </div>
 
+                      {/* 允许动态延长开关 */}
+                      <div className="flex items-center justify-between p-3 rounded-xl bg-zinc-900/60 border border-zinc-700">
+                        <div>
+                          <p className="text-sm font-medium text-zinc-300">允许动态延长</p>
+                          <p className="text-xs text-zinc-500">
+                            创建者可在注册期/投票期内延长截止时间。
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => setAllowExtension(!allowExtension)}
+                          className={`relative w-11 h-6 rounded-full transition-colors ${
+                            allowExtension ? "bg-amber-500" : "bg-zinc-700"
+                          }`}
+                        >
+                          <span
+                            className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
+                              allowExtension ? "left-6" : "left-1"
+                            }`}
+                          />
+                        </button>
+                      </div>
                       {useBlockNumber ? (
                         <>
                           <div className="grid grid-cols-4 gap-3">
@@ -3802,8 +4115,8 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                     </div>
                   )}
 
-                  {/* 手动推进模式提示 */}
-                  {!autoAdvance && (
+                        {/* 手动推进模式提示 */}
+                        {!autoAdvance && (
                     <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
                       <p className="text-sm text-amber-400 flex items-center gap-2">
                         <Crown className="w-4 h-4" /> 手动推进模式
@@ -3812,7 +4125,10 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                         创建后，您可以随时点击按钮推进投票状态，无需等待时间
                       </p>
                     </div>
-                  )}
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex gap-2">
@@ -4181,6 +4497,193 @@ function App() {
   const handleLoadPendingVoters = useCallback(async (proposalId: number): Promise<string[]> => {
     return await votingFactory.getPendingVoters(proposalId);
   }, [votingFactory]);
+
+  // 处理加密投票 - 同态加密选票（Encrypted 隐私级别，当前仅支持简单多数）
+  const handleVoteEncrypted = useCallback(async (proposalId: number, optionIndex: number) => {
+    if (!wallet.isConnected) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const optionCount = proposal?.options?.length ?? 0;
+    if (optionCount === 0 || optionIndex < 0 || optionIndex >= optionCount) {
+      addToast("error", "加密投票失败", "选项无效");
+      return;
+    }
+    const pkJson = parsePublicKeyFromDescription(proposal!.description);
+    if (!pkJson) {
+      addToast("error", "加密投票失败", "未找到投票公钥，请确认该投票已正确配置");
+      return;
+    }
+    try {
+      addToast("info", "正在加密选票...", "请稍候");
+      const { deserializePublicKey, encryptVote } = await import("@/utils/paillierVoting");
+      const publicKey = deserializePublicKey(pkJson);
+      const encryptedHex = encryptVote(publicKey, optionIndex, optionCount);
+      const success = await votingFactory.castVoteEncrypted(proposalId, encryptedHex);
+      if (success) {
+        addToast("success", "投票成功", "您的加密选票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "加密投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "加密投票失败", msg);
+    }
+  }, [wallet.isConnected, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理完全隐私投票 - Semaphore 证明 + 加密选票（简单多数/加权）
+  const handleVoteFullPrivacy = useCallback(async (proposalId: number, optionIndex: number) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const optionCount = proposal?.options?.length ?? 0;
+    if (optionCount === 0 || optionIndex < 0 || optionIndex >= optionCount) {
+      addToast("error", "完全隐私投票失败", "选项无效");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}`;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) {
+      addToast("error", "完全隐私投票失败", "未找到本地身份，请先完成匿名注册");
+      return;
+    }
+    const pkJson = parsePublicKeyFromDescription(proposal!.description);
+    if (!pkJson) {
+      addToast("error", "完全隐私投票失败", "未找到投票公钥");
+      return;
+    }
+    try {
+      addToast("info", "正在生成零知识证明并加密选票...", "请稍候");
+      const { Identity } = await import("@semaphore-protocol/identity");
+      const { Group } = await import("@semaphore-protocol/group");
+      const { generateProof } = await import("@semaphore-protocol/proof");
+      const { fetchSemaphoreGroupMembers } = await import("@/utils/semaphoreGroup");
+      const { deserializePublicKey, encryptVote } = await import("@/utils/paillierVoting");
+
+      const identity = Identity.import(stored);
+      const publicKey = deserializePublicKey(pkJson);
+      const encryptedHex = encryptVote(publicKey, optionIndex, optionCount);
+
+      const provider = await votingFactory.getProvider();
+      const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
+      if (groupId === 0n) {
+        addToast("error", "完全隐私投票失败", "未找到 Semaphore 群组");
+        return;
+      }
+
+      const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
+      if (commitments.length === 0) {
+        addToast("error", "完全隐私投票失败", "群组尚无成员");
+        return;
+      }
+
+      const group = new Group(commitments);
+      const scope = BigInt(proposalId);
+      const message = 0n; // Full Privacy: message 必须为 0，选票内容在加密数据中
+      const proof = await generateProof(identity, group, message, scope);
+
+      const proofForContract = {
+        merkleTreeDepth: proof.merkleTreeDepth,
+        merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+        nullifier: BigInt(proof.nullifier),
+        message: BigInt(proof.message),
+        scope: BigInt(proof.scope),
+        points: (proof.points as string[]).map((p) => BigInt(p)),
+      };
+
+      const success = await votingFactory.castVoteFullPrivacy(proposalId, encryptedHex, proofForContract);
+      if (success) {
+        addToast("success", "投票成功", "您的完全隐私投票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "完全隐私投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "完全隐私投票失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
+
+  // 处理完全隐私加权投票
+  const handleVoteFullPrivacyWeighted = useCallback(async (proposalId: number, optionIndex: number, groupIndex: number) => {
+    if (!wallet.isConnected || !wallet.address) {
+      addToast("warning", "请先连接钱包");
+      return;
+    }
+    const proposal = proposals.find((p) => p.id === proposalId);
+    const optionCount = proposal?.options?.length ?? 0;
+    if (optionCount === 0 || optionIndex < 0 || optionIndex >= optionCount) {
+      addToast("error", "完全隐私投票失败", "选项无效");
+      return;
+    }
+    const storageKey = `semaphore-identity-${wallet.address.toLowerCase()}-${proposalId}-w-${groupIndex}`;
+    const stored = localStorage.getItem(storageKey);
+    if (!stored) {
+      addToast("error", "完全隐私投票失败", "未找到本地身份，请先完成匿名注册");
+      return;
+    }
+    const pkJson = parsePublicKeyFromDescription(proposal!.description);
+    if (!pkJson) {
+      addToast("error", "完全隐私投票失败", "未找到投票公钥");
+      return;
+    }
+    try {
+      addToast("info", "正在生成零知识证明并加密选票...", "请稍候");
+      const { Identity } = await import("@semaphore-protocol/identity");
+      const { Group } = await import("@semaphore-protocol/group");
+      const { generateProof } = await import("@semaphore-protocol/proof");
+      const { fetchSemaphoreGroupMembers } = await import("@/utils/semaphoreGroup");
+      const { deserializePublicKey, encryptVote } = await import("@/utils/paillierVoting");
+
+      const identity = Identity.import(stored);
+      const publicKey = deserializePublicKey(pkJson);
+      const encryptedHex = encryptVote(publicKey, optionIndex, optionCount);
+
+      const provider = await votingFactory.getProvider();
+      const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupIdByWeight(proposalId, groupIndex));
+      if (groupId === 0n) {
+        addToast("error", "完全隐私投票失败", "未找到 Semaphore 群组");
+        return;
+      }
+
+      const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
+      if (commitments.length === 0) {
+        addToast("error", "完全隐私投票失败", "群组尚无成员");
+        return;
+      }
+
+      const group = new Group(commitments);
+      const scope = BigInt(proposalId);
+      const message = 0n;
+      const proof = await generateProof(identity, group, message, scope);
+
+      const proofForContract = {
+        merkleTreeDepth: proof.merkleTreeDepth,
+        merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+        nullifier: BigInt(proof.nullifier),
+        message: BigInt(proof.message),
+        scope: BigInt(proof.scope),
+        points: (proof.points as string[]).map((p) => BigInt(p)),
+      };
+
+      const success = await votingFactory.castVoteFullPrivacyWeighted(proposalId, encryptedHex, groupIndex, proofForContract);
+      if (success) {
+        addToast("success", "投票成功", "您的完全隐私投票已提交");
+        refreshProposals();
+      } else if (votingFactory.error) {
+        addToast("error", "完全隐私投票失败", votingFactory.error);
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      addToast("error", "完全隐私投票失败", msg);
+    }
+  }, [wallet.isConnected, wallet.address, votingFactory, refreshProposals, addToast, proposals]);
 
   // 处理匿名投票 - 生成 ZK 证明（支持简单多数、加权）
   const handleVoteAnonymous = useCallback(async (proposalId: number, optionIndex: number) => {
@@ -4656,10 +5159,28 @@ function App() {
       return;
     }
 
+    let description = proposalData.description;
+    let pendingPrivateKey: string | null = null;
+
+    // 加密/完全隐私投票：生成 Paillier 密钥对，将公钥追加到描述
+    if (proposalData.privacy === PrivacyLevel.Encrypted || proposalData.privacy === PrivacyLevel.FullPrivacy) {
+      try {
+        const { generatePaillierKeyPair, appendPublicKeyToDescription, serializePrivateKey } = await import("@/utils/paillierVoting");
+        addToast("info", "正在生成加密密钥...", "请稍候");
+        const { publicKey, privateKey } = await generatePaillierKeyPair(2048);
+        description = appendPublicKeyToDescription(proposalData.description, publicKey);
+        pendingPrivateKey = JSON.stringify(serializePrivateKey(privateKey));
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        addToast("error", "密钥生成失败", msg);
+        return;
+      }
+    }
+
     // 使用用户配置的时间
     const votingId = await votingFactory.createVoting({
       title: proposalData.title,
-      description: proposalData.description,
+      description,
       options: proposalData.options,
       votingRule: proposalData.rule,
       privacyLevel: proposalData.privacy,
@@ -4696,6 +5217,16 @@ function App() {
 
     if (votingId !== null) {
       console.log("投票创建成功，ID:", votingId);
+
+      // 加密/完全隐私：保存私钥到 localStorage（仅创建者，用于计票阶段解密）
+      if (pendingPrivateKey && (proposalData.privacy === PrivacyLevel.Encrypted || proposalData.privacy === PrivacyLevel.FullPrivacy)) {
+        try {
+          localStorage.setItem(`paillier-sk-${votingId}`, pendingPrivateKey);
+          addToast("info", "私钥已保存", "计票时需用此私钥解密，请勿清除浏览器数据");
+        } catch (_) {
+          addToast("warning", "私钥保存失败", "计票时可能无法解密，请备份");
+        }
+      }
       
       // 自动推进模式：自动开始注册阶段
       if (proposalData.autoAdvance) {
@@ -4859,6 +5390,9 @@ function App() {
                     onRegisterWeighted={handleRegisterWeighted}
                     onVote={handleVote}
                     onVoteAnonymous={handleVoteAnonymous}
+                    onVoteEncrypted={handleVoteEncrypted}
+                    onVoteFullPrivacy={handleVoteFullPrivacy}
+                    onVoteFullPrivacyWeighted={handleVoteFullPrivacyWeighted}
                     onVoteAnonymousRanked={handleVoteAnonymousRanked}
                     onVoteAnonymousQuadratic={handleVoteAnonymousQuadratic}
                     onQuadraticVote={handleQuadraticVote}

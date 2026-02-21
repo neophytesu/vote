@@ -6,6 +6,7 @@ import "./RegistrationCenter.sol";
 import "./VotingCenter.sol";
 import "./RevealCenter.sol";
 import "./VotingFactory.sol";
+import "./types/VotingDataTypes.sol";
 
 /**
  * @title QueryCenter
@@ -42,9 +43,9 @@ contract QueryCenter is IVotingTypes {
     function getVoting(uint256 votingId) 
         public 
         view 
-        returns (VotingFactory.VotingDetails memory) 
+        returns (VotingDataTypes.VotingDetails memory) 
     {
-        VotingFactory.VotingInfo memory info = votingFactory.getVotingRaw(votingId);
+        VotingDataTypes.VotingInfo memory info = votingFactory.getVotingRaw(votingId);
         
         uint256 totalVoters = registrationCenter.getVoterCount(votingId);
         uint256 totalVotes = votingCenter.getTotalVotes(votingId);
@@ -52,7 +53,7 @@ contract QueryCenter is IVotingTypes {
         bool resultRevealed = revealCenter.isResultRevealed(votingId);
         VotingState effectiveState = votingFactory.getEffectiveState(votingId);
 
-        return VotingFactory.VotingDetails({
+        return VotingDataTypes.VotingDetails({
             id: info.id,
             creator: info.creator,
             title: info.title,
@@ -106,10 +107,10 @@ contract QueryCenter is IVotingTypes {
      * @param count 数量
      * @return 投票详情数组
      */
-    function getRecentVotings(uint256 count) external view returns (VotingFactory.VotingDetails[] memory) {
+    function getRecentVotings(uint256 count) external view returns (VotingDataTypes.VotingDetails[] memory) {
         uint256 total = votingFactory.votingCount();
         uint256 resultCount = count > total ? total : count;
-        VotingFactory.VotingDetails[] memory result = new VotingFactory.VotingDetails[](resultCount);
+        VotingDataTypes.VotingDetails[] memory result = new VotingDataTypes.VotingDetails[](resultCount);
         
         for (uint256 i = 0; i < resultCount; i++) {
             uint256 votingId = total - i;
@@ -143,8 +144,7 @@ contract QueryCenter is IVotingTypes {
      * @return 选项数组
      */
     function getVotingOptions(uint256 votingId) external view returns (string[] memory) {
-        VotingFactory.VotingInfo memory info = votingFactory.getVotingRaw(votingId);
-        return info.options;
+        return votingFactory.getVotingOptions(votingId);
     }
 
     /**
@@ -206,10 +206,10 @@ contract QueryCenter is IVotingTypes {
     function getVotingsBatch(uint256[] calldata votingIds) 
         external 
         view 
-        returns (VotingFactory.VotingDetails[] memory) 
+        returns (VotingDataTypes.VotingDetails[] memory) 
     {
         uint256 total = votingFactory.votingCount();
-        VotingFactory.VotingDetails[] memory result = new VotingFactory.VotingDetails[](votingIds.length);
+        VotingDataTypes.VotingDetails[] memory result = new VotingDataTypes.VotingDetails[](votingIds.length);
         
         for (uint256 i = 0; i < votingIds.length; i++) {
             if (votingIds[i] > 0 && votingIds[i] <= total) {

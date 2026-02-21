@@ -245,6 +245,14 @@ describe("PublicVoting", async function () {
     assert.ok(creatorVotings.length >= 1n, "至少包含本 describe 中创建的投票");
   });
 
+  it("QueryCenter: getVotingsBatch 与逐个 getVoting 结果一致", async function () {
+    const allIds = await queryCenter.read.getAllVotingIds();
+    if (allIds.length === 0n) return;
+    const batch = await queryCenter.read.getVotingsBatch([allIds]);
+    const singleFirst = await queryCenter.read.getVoting([allIds[0]]);
+    assert.equal(batch[0].id, singleFirst.id, "batch[0].id 应等于单条查询");
+  });
+
   it("StatisticsCenter: 创建并完成投票后应有统计记录", async function () {
     const block = await publicClient.getBlock();
     const now = Number(block.timestamp);
@@ -276,5 +284,17 @@ describe("PublicVoting", async function () {
     assert.equal(votingStats.voteCount, 2n, "投票人数应为 2");
     const globalStats = await statisticsCenter.read.getGlobalStats();
     assert.ok(Number(globalStats.completedVotings) >= 1, "至少 1 个已完成投票");
+    const [simpleMajority, weighted, quadratic, rankedChoice] =
+      await statisticsCenter.read.getRuleStats();
+    assert.ok(
+      Number(simpleMajority + weighted + quadratic + rankedChoice) >= 1,
+      "规则使用统计应有记录"
+    );
+    const [publicCount, anonymousCount, encryptedCount, fullPrivacyCount] =
+      await statisticsCenter.read.getPrivacyStats();
+    assert.ok(
+      Number(publicCount + anonymousCount + encryptedCount + fullPrivacyCount) >= 1,
+      "隐私级别统计应有记录"
+    );
   });
 });

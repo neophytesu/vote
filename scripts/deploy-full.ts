@@ -72,26 +72,36 @@ async function main() {
   console.log("Semaphore:", semaphore.address);
 
   // 4. Centers
-  const registrationCenter = await viem.deployContract("RegistrationCenter");
+  const votingFactory = await viem.deployContract("VotingFactory", []);
+  console.log("VotingFactory:", votingFactory.address);
+
+  const registrationCenter = await viem.deployContract("RegistrationCenter", [votingFactory.address]);
   console.log("RegistrationCenter:", registrationCenter.address);
 
-  const votingCenter = await viem.deployContract("VotingCenter");
+  const votingCenter = await viem.deployContract("VotingCenter", [votingFactory.address, registrationCenter.address]);
   console.log("VotingCenter:", votingCenter.address);
 
-  const revealCenter = await viem.deployContract("RevealCenter");
+  const revealCenter = await viem.deployContract("RevealCenter", [votingFactory.address]);
   console.log("RevealCenter:", revealCenter.address);
 
-  const statisticsCenter = await viem.deployContract("StatisticsCenter");
+  const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
   console.log("StatisticsCenter:", statisticsCenter.address);
 
-  // 5. VotingFactory
-  const votingFactory = await viem.deployContract("VotingFactory", [
+  // 4b. ExecutionCenter（可选执行机制）
+  const executionCenter = await viem.deployContract("ExecutionCenter", [votingFactory.address, revealCenter.address]);
+  console.log("ExecutionCenter:", executionCenter.address);
+
+  // 5. Core 配置中心地址（只需一次）
+  const txSetCenters = await votingFactory.write.setCenters([
     registrationCenter.address,
     votingCenter.address,
     revealCenter.address,
     statisticsCenter.address,
   ]);
-  console.log("VotingFactory:", votingFactory.address);
+  await publicClient.waitForTransactionReceipt({ hash: txSetCenters });
+
+  const txSetExecution = await votingFactory.write.setExecutionCenter([executionCenter.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txSetExecution });
 
   // 6. AnonymousVoting
   const anonymousVoting = await viem.deployContract(
@@ -107,35 +117,45 @@ async function main() {
   );
   console.log("AnonymousVoting:", anonymousVoting.address);
 
+  // 6c. EncryptedVoting
+  const encryptedVoting = await viem.deployContract(
+    "EncryptedVoting",
+    [
+      votingFactory.address,
+      registrationCenter.address,
+      votingCenter.address,
+      statisticsCenter.address,
+    ],
+    gasOverrides
+  );
+  console.log("EncryptedVoting:", encryptedVoting.address);
+
   // 7. QueryCenter
   const queryCenter = await viem.deployContract("QueryCenter", [votingFactory.address]);
   console.log("QueryCenter:", queryCenter.address);
 
-  // 8. 配置（必须先设置 votingCore，VotingFactory.setAnonymousVoting 会传播到各中心）
-  await registrationCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setVotingCore([votingFactory.address]);
-  await votingCenter.write.setRegistrationCenter([registrationCenter.address]);
+  // 8. 配置（VotingFactory.setAnonymousVoting 会传播到各中心）
   const txSetAnonymous = await votingFactory.write.setAnonymousVoting([anonymousVoting.address]);
   await publicClient.waitForTransactionReceipt({ hash: txSetAnonymous });
-
-  const txRevealCore = await revealCenter.write.setVotingCore([votingFactory.address]);
-  await publicClient.waitForTransactionReceipt({ hash: txRevealCore });
-
-  const txStatsAuth = await statisticsCenter.write.setAuthorizedCaller([votingFactory.address]);
-  await publicClient.waitForTransactionReceipt({ hash: txStatsAuth });
+  const txSetEncrypted = await votingFactory.write.setEncryptedVoting([encryptedVoting.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txSetEncrypted });
 
   const txStatsAnonymous = await statisticsCenter.write.setAnonymousVoting([anonymousVoting.address]);
   await publicClient.waitForTransactionReceipt({ hash: txStatsAnonymous });
+  const txStatsEncrypted = await statisticsCenter.write.setEncryptedVoting([encryptedVoting.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txStatsEncrypted });
 
   console.log("\n✅ 部署完成!");
 
   const addresses = {
     "VotingFactoryModule#VotingFactory": votingFactory.address,
     "VotingFactoryModule#AnonymousVoting": anonymousVoting.address,
+    "VotingFactoryModule#EncryptedVoting": encryptedVoting.address,
     "VotingFactoryModule#RegistrationCenter": registrationCenter.address,
     "VotingFactoryModule#VotingCenter": votingCenter.address,
     "VotingFactoryModule#RevealCenter": revealCenter.address,
     "VotingFactoryModule#StatisticsCenter": statisticsCenter.address,
+    "VotingFactoryModule#ExecutionCenter": executionCenter.address,
     "VotingFactoryModule#QueryCenter": queryCenter.address,
   };
 

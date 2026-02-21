@@ -3,6 +3,7 @@ import { BrowserProvider, Contract } from "ethers";
 import {
   VotingFactoryABI,
   AnonymousVotingABI,
+  EncryptedVotingABI,
   QueryCenterABI,
   RegistrationCenterABI,
   ExecutionCenterABI,
@@ -193,6 +194,27 @@ export function useVotingFactory(chainId: number | null) {
     const c = await getAnonymousReadOnlyContract();
     return c.semaphore() as Promise<string>;
   }, [getAnonymousReadOnlyContract]);
+
+  // 获取加密投票合约地址（从 Factory 动态获取）
+  const getEncryptedVotingAddress = useCallback(async (): Promise<string> => {
+    const c = await getReadOnlyContract();
+    const addr = (await c.encryptedVoting()) as string;
+    if (!addr || addr === "0x0000000000000000000000000000000000000000") {
+      throw new Error("EncryptedVoting 合约尚未配置到当前网络");
+    }
+    return addr;
+  }, [getReadOnlyContract]);
+
+  // 获取加密投票合约实例（写操作）
+  const getEncryptedContract = useCallback(async () => {
+    if (!window.ethereum || !chainId) {
+      throw new Error("请先连接钱包");
+    }
+    const addr = await getEncryptedVotingAddress();
+    const provider = new BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    return new Contract(addr, EncryptedVotingABI, signer);
+  }, [chainId, getEncryptedVotingAddress]);
 
   // 获取投票的 Semaphore 群组 ID（简单多数/排序选择）
   const getVotingSemaphoreGroupId = useCallback(
@@ -815,6 +837,170 @@ export function useVotingFactory(chainId: number | null) {
           ...prev,
           isLoading: false,
           error: error.message || "匿名二次方投票失败",
+        }));
+        return false;
+      }
+    },
+    [getAnonymousContract]
+  );
+
+  /**
+   * 加密投票 - 提交同态加密选票（Encrypted 隐私级别）
+   */
+  const castVoteEncrypted = useCallback(
+    async (votingId: number, encryptedBallotHex: string): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getEncryptedContract();
+        const tx = await contract.castVoteEncrypted(votingId, encryptedBallotHex);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "加密投票失败",
+        }));
+        return false;
+      }
+    },
+    [getEncryptedContract]
+  );
+
+  /**
+   * 提交计票结果（加密投票/完全隐私 - 创建者或委员会）
+   */
+  const submitTallyResult = useCallback(
+    async (votingId: number, totalBallots: number, decryptedCounts: number[]): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getEncryptedContract();
+        const tx = await contract.submitTallyResult(votingId, totalBallots, decryptedCounts);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "提交计票失败",
+        }));
+        return false;
+      }
+    },
+    [getEncryptedContract]
+  );
+
+  /**
+   * 委员会确认计票结果（阈值解密时）
+   */
+  const approveTallyResult = useCallback(
+    async (votingId: number): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getEncryptedContract();
+        const tx = await contract.approveTallyResult(votingId);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "确认计票失败",
+        }));
+        return false;
+      }
+    },
+    [getEncryptedContract]
+  );
+
+  /**
+   * 完全隐私投票 - Semaphore 证明 + 加密选票（简单多数/排序选择/二次方）
+   */
+  const castVoteFullPrivacy = useCallback(
+    async (
+      votingId: number,
+      encryptedBallotHex: string,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getAnonymousContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteFullPrivacy(votingId, encryptedBallotHex, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "完全隐私投票失败",
+        }));
+        return false;
+      }
+    },
+    [getAnonymousContract]
+  );
+
+  /**
+   * 完全隐私加权投票 - Semaphore 证明 + 加密选票
+   */
+  const castVoteFullPrivacyWeighted = useCallback(
+    async (
+      votingId: number,
+      encryptedBallotHex: string,
+      groupIndex: number,
+      proof: {
+        merkleTreeDepth: number;
+        merkleTreeRoot: bigint;
+        nullifier: bigint;
+        message: bigint;
+        scope: bigint;
+        points: bigint[];
+      }
+    ): Promise<boolean> => {
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        const contract = await getAnonymousContract();
+        const proofTuple = {
+          merkleTreeDepth: proof.merkleTreeDepth,
+          merkleTreeRoot: proof.merkleTreeRoot,
+          nullifier: proof.nullifier,
+          message: proof.message,
+          scope: proof.scope,
+          points: proof.points,
+        };
+        const tx = await contract.castVoteFullPrivacyWeighted(votingId, encryptedBallotHex, groupIndex, proofTuple);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false }));
+        return true;
+      } catch (err) {
+        const error = err as Error;
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: error.message || "完全隐私加权投票失败",
         }));
         return false;
       }
@@ -1539,6 +1725,12 @@ export function useVotingFactory(chainId: number | null) {
     castVoteAnonymousWeighted,
     castVoteAnonymousRanked,
     castVoteAnonymousQuadratic,
+    castVoteEncrypted,
+    submitTallyResult,
+    approveTallyResult,
+    castVoteFullPrivacy,
+    castVoteFullPrivacyWeighted,
+    getEncryptedVotingAddress,
     castQuadraticVote,
     castRankedVote,
     startTallying,

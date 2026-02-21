@@ -29,28 +29,33 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     },
   });
 
-  // 2. 部署注册中心
-  const registrationCenter = m.contract("RegistrationCenter", []);
+  // 2. 先部署工厂合约（core），再部署中心（构造函数注入 votingCore，避免被抢先 setVotingCore）
+  const votingFactory = m.contract("VotingFactory", []);
 
-  // 3. 部署计票中心
-  const votingCenter = m.contract("VotingCenter", []);
+  // 3. 部署注册中心（注入 votingFactory）
+  const registrationCenter = m.contract("RegistrationCenter", [votingFactory]);
 
-  // 4. 部署揭示中心
-  const revealCenter = m.contract("RevealCenter", []);
+  // 4. 部署计票中心（注入 votingFactory + registrationCenter）
+  const votingCenter = m.contract("VotingCenter", [votingFactory, registrationCenter]);
 
-  // 5. 部署统计中心
-  const statisticsCenter = m.contract("StatisticsCenter", []);
+  // 5. 部署揭示中心（注入 votingFactory）
+  const revealCenter = m.contract("RevealCenter", [votingFactory]);
 
-  // 5b. 部署执行中心（提案通过后的链上执行）
-  const executionCenter = m.contract("ExecutionCenter", []);
+  // 6. 部署统计中心（authorizedCaller = votingFactory）
+  const statisticsCenter = m.contract("StatisticsCenter", [votingFactory]);
 
-  // 6. 部署工厂合约，传入四个中心的地址
-  const votingFactory = m.contract("VotingFactory", [
+  // 6b. 部署执行中心（注入 votingFactory + revealCenter）
+  const executionCenter = m.contract("ExecutionCenter", [votingFactory, revealCenter]);
+
+  // 7. 在 core 中配置各中心地址（只需一次）
+  m.call(votingFactory, "setCenters", [
     registrationCenter,
     votingCenter,
     revealCenter,
     statisticsCenter,
-  ]);
+  ], {
+    id: "setCenters",
+  });
 
   // 6b. 部署匿名投票合约
   const anonymousVoting = m.contract("AnonymousVoting", [
@@ -61,45 +66,37 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     statisticsCenter,
   ]);
 
-  // 7. 部署查询中心，传入工厂合约地址
+  // 6c. 部署加密投票合约（同态加密选票提交与计票结果写入）
+  const encryptedVoting = m.contract("EncryptedVoting", [
+    votingFactory,
+    registrationCenter,
+    votingCenter,
+    statisticsCenter,
+  ]);
+
+  // 8. 部署查询中心，传入工厂合约地址
   const queryCenter = m.contract("QueryCenter", [votingFactory]);
 
-  // 8. 设置 AnonymousVoting 到 VotingFactory
+  // 9. 设置 AnonymousVoting 到 VotingFactory
   m.call(votingFactory, "setAnonymousVoting", [anonymousVoting], {
     id: "setAnonymousVoting",
   });
 
-  // 9. 设置各中心的授权合约为 VotingFactory
-  m.call(registrationCenter, "setVotingCore", [votingFactory], {
-    id: "setVotingCore_registration",
+  m.call(votingFactory, "setEncryptedVoting", [encryptedVoting], {
+    id: "setEncryptedVoting",
   });
-
-  m.call(votingCenter, "setVotingCore", [votingFactory], {
-    id: "setVotingCore_voting",
-  });
-
-  m.call(votingCenter, "setRegistrationCenter", [registrationCenter], {
-    id: "setRegistrationCenter",
-  });
-
-  // RegistrationCenter 与 VotingCenter 的 setAnonymousVoting 由 VotingFactory.setAnonymousVoting 内部调用传播
 
   m.call(statisticsCenter, "setAnonymousVoting", [anonymousVoting], {
     id: "setAnonymousVoting_statistics",
   });
 
-  m.call(revealCenter, "setVotingCore", [votingFactory], {
-    id: "setVotingCore_reveal",
+  m.call(statisticsCenter, "setEncryptedVoting", [encryptedVoting], {
+    id: "setEncryptedVoting_statistics",
   });
 
-  // 10. 设置执行中心（VotingFactory.setExecutionCenter 内部会设置 votingCore 和 revealCenter）
+  // 10. 设置执行中心（ExecutionCenter 构造函数已注入依赖；core 仅保存地址）
   m.call(votingFactory, "setExecutionCenter", [executionCenter], {
     id: "setExecutionCenter",
-  });
-
-  // 设置统计中心的授权调用者
-  m.call(statisticsCenter, "setAuthorizedCaller", [votingFactory], {
-    id: "setAuthorizedCaller_statistics",
   });
 
   return {
@@ -112,6 +109,7 @@ const VotingFactoryModule = buildModule("VotingFactoryModule", (m) => {
     executionCenter,
     votingFactory,
     anonymousVoting,
+    encryptedVoting,
     queryCenter,
   };
 });
