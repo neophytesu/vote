@@ -40,6 +40,9 @@ async function main() {
   const statisticsCenter = await viem.deployContract("StatisticsCenter", [votingFactory.address]);
   console.log("StatisticsCenter:", statisticsCenter.address);
 
+  const executionCenter = await viem.deployContract("ExecutionCenter", [votingFactory.address, revealCenter.address]);
+  console.log("ExecutionCenter:", executionCenter.address);
+
   const txSetCenters = await votingFactory.write.setCenters([
     registrationCenter.address,
     votingCenter.address,
@@ -48,30 +51,43 @@ async function main() {
   ]);
   await publicClient.waitForTransactionReceipt({ hash: txSetCenters });
 
+  const txSetExecution = await votingFactory.write.setExecutionCenter([executionCenter.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txSetExecution });
+
   // 6. AnonymousVotingStub（替代 AnonymousVoting，无 Semaphore 依赖）
   const anonymousVotingStub = await viem.deployContract("AnonymousVotingStub");
   console.log("AnonymousVotingStub:", anonymousVotingStub.address);
 
-  // 7. 配置
+  // 6b. EncryptedVotingStub（替代 EncryptedVoting，无同态加密依赖）
+  const encryptedVotingStub = await viem.deployContract("EncryptedVotingStub");
+  console.log("EncryptedVotingStub:", encryptedVotingStub.address);
+
+  // 7. 配置匿名/加密占位（仅公开投票可用，匿名/加密创建会 revert）
   const txSetAnonymous = await votingFactory.write.setAnonymousVoting([anonymousVotingStub.address]);
   await publicClient.waitForTransactionReceipt({ hash: txSetAnonymous });
+  const txSetEncrypted = await votingFactory.write.setEncryptedVoting([encryptedVotingStub.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txSetEncrypted });
 
   const txStatsAnonymous = await statisticsCenter.write.setAnonymousVoting([anonymousVotingStub.address]);
   await publicClient.waitForTransactionReceipt({ hash: txStatsAnonymous });
+  const txStatsEncrypted = await statisticsCenter.write.setEncryptedVoting([encryptedVotingStub.address]);
+  await publicClient.waitForTransactionReceipt({ hash: txStatsEncrypted });
 
   // 8. QueryCenter（需要 core 已配置中心地址）
   const queryCenter = await viem.deployContract("QueryCenter", [votingFactory.address]);
   console.log("QueryCenter:", queryCenter.address);
 
-  console.log("\n✅ 部署完成（匿名投票已禁用）!");
+  console.log("\n✅ 部署完成（仅公开投票，无匿名/无加密）!");
 
   const addresses = {
     "VotingFactoryModule#VotingFactory": votingFactory.address,
     "VotingFactoryModule#AnonymousVoting": anonymousVotingStub.address,
+    "VotingFactoryModule#EncryptedVoting": encryptedVotingStub.address,
     "VotingFactoryModule#RegistrationCenter": registrationCenter.address,
     "VotingFactoryModule#VotingCenter": votingCenter.address,
     "VotingFactoryModule#RevealCenter": revealCenter.address,
     "VotingFactoryModule#StatisticsCenter": statisticsCenter.address,
+    "VotingFactoryModule#ExecutionCenter": executionCenter.address,
     "VotingFactoryModule#QueryCenter": queryCenter.address,
   };
 

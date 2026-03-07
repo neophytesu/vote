@@ -40,6 +40,8 @@ export const getChainName = (chainId: number | null): string => {
     1: "Ethereum",
     5: "Goerli",
     11155111: "Sepolia",
+    1337: "Localhost",
+    31337: "Localhost",
     137: "Polygon",
     80001: "Mumbai",
     42161: "Arbitrum",

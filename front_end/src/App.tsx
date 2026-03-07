@@ -2470,6 +2470,7 @@ interface CreateProposalData {
   thresholdCommittee?: string[];
   thresholdT?: number;
   revealDelay?: number; // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数
+  quorum?: number;    // 法定人数，达到后提案视为通过；0 表示不要求
 }
 
 interface CreateProposalCardProps {
@@ -2555,6 +2556,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [registrationDuration, setRegistrationDuration] = useState(5); // 注册持续时长（分钟或区块）
   const [votingDuration, setVotingDuration] = useState(60);          // 投票持续时长（分钟或区块）
   const [revealDelay, setRevealDelay] = useState(0);                 // 结果揭示延迟（分钟或区块，0=不延迟）
+  const [quorum, setQuorum] = useState(0);                            // 法定人数，0=不要求
   const [autoAdvance, setAutoAdvance] = useState(true);              // 推进模式：true=自动，false=手动
   const [allowExtension, setAllowExtension] = useState(true);          // 是否允许动态延长注册期/投票期
   // 具体日期模式下的四个时间点（datetime-local 格式：YYYY-MM-DDTHH:mm）
@@ -2637,6 +2639,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     setRegistrationDuration(5);
     setVotingDuration(60);
     setRevealDelay(0);
+    setQuorum(0);
     setRegStartDate("");
     setRegEndDate("");
     setVoteStartDate("");
@@ -2866,6 +2869,7 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       votingEnd: voteEnd,
       autoAdvance,
       allowExtension,
+      quorum,
       visibilityBitmap,
       enableWhitelist,
       whitelist: whitelist
@@ -3325,6 +3329,28 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                                 </button>
                               ))}
                             </div>
+                          </div>
+                        </div>
+
+                        {/* 法定人数（投票规则子项） */}
+                        <div className="p-3 rounded-xl bg-zinc-900/60 border border-zinc-700 space-y-2">
+                          <div className="flex items-center justify-between gap-4 flex-wrap">
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-medium text-zinc-300">法定人数</p>
+                              <p className="text-xs text-zinc-500 mt-0.5">
+                                {rule === VotingRule.SimpleMajority && "参与人数达到此值后提案视为通过；0 表示不要求。"}
+                                {rule === VotingRule.Weighted && "加权总票数达到此值后提案视为通过；0 表示不要求。"}
+                                {rule === VotingRule.Quadratic && "总票数（各选项票数之和）达到此值后提案视为通过；0 表示不要求。"}
+                                {rule === VotingRule.RankedChoice && "参与人数达到此值后提案视为通过；0 表示不要求。"}
+                              </p>
+                            </div>
+                            <input
+                              type="number"
+                              min={0}
+                              value={quorum}
+                              onChange={(e) => setQuorum(Math.max(0, parseInt(e.target.value, 10) || 0))}
+                              className="w-24 shrink-0 px-3 py-2 rounded-lg bg-zinc-800 border border-zinc-700 text-zinc-100 text-center focus:border-fuchsia-500 focus:outline-none"
+                            />
                           </div>
                         </div>
 
@@ -5188,7 +5214,7 @@ function App() {
       registrationEnd: proposalData.registrationEnd,
       votingStart: proposalData.votingStart,
       votingEnd: proposalData.votingEnd,
-      quorum: 0, // 无法定人数要求
+      quorum: proposalData.quorum ?? 0,
       autoAdvance: proposalData.autoAdvance,
       visibilityBitmap: proposalData.visibilityBitmap,
       enableWhitelist: proposalData.enableWhitelist,

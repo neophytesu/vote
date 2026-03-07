@@ -208,6 +208,14 @@ export const AnonymousVotingABI = [
 ] as const;
 
 /**
+ * 加密投票合约 ABI（同态加密选票提交）
+ */
+export const EncryptedVotingABI = [
+  "function initializeEncryptedVoting(uint256 votingId)",
+  "function castVoteEncrypted(uint256 votingId, bytes calldata encryptedBallot)",
+] as const;
+
+/**
  * 查询中心合约 ABI（所有只读查询）
  */
 export const QueryCenterABI = [
@@ -277,6 +285,17 @@ export const RegistrationRule = {
   TokenHolder: 3,
 } as const;
 export type RegistrationRule = (typeof RegistrationRule)[keyof typeof RegistrationRule];
+
+/**
+ * 执行模式
+ */
+export const ExecutionMode = {
+  None: 0,
+  OnChainAuto: 1,
+  MultiSig: 2,
+  Timelock: 3,
+} as const;
+export type ExecutionMode = (typeof ExecutionMode)[keyof typeof ExecutionMode];
 
 /**
  * 合约地址配置

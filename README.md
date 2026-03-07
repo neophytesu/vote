@@ -55,3 +55,44 @@ After setting the variable, you can run the deployment with the Sepolia network:
 ```shell
 npx hardhat ignition deploy --network sepolia ignition/modules/Counter.ts
 ```
+
+---
+
+## 前端联调（无匿名/无加密）
+
+与前端联调时，使用「仅公开投票」部署，不依赖 Semaphore/同态加密，启动更快。
+
+### 步骤
+
+**1. 终端一：启动本地链**
+
+```bash
+npm run node
+```
+
+保持运行。若出现 `EMFILE: too many open files`，可先执行 `ulimit -n 65536` 或新开终端再运行。
+
+**2. 终端二：部署合约并更新前端地址**
+
+```bash
+npm run deploy:local:no-anonymous
+```
+
+会部署到 `http://127.0.0.1:8545` 并写入 `front_end/src/contracts/abi.ts` 的 localhost 地址。
+
+**3. 终端三：启动前端**
+
+```bash
+cd front_end && npm run dev
+```
+
+**4. 浏览器**
+
+- 安装 MetaMask，添加网络：RPC URL `http://127.0.0.1:8545`，链 ID `31337`
+- 导入测试账户私钥（`npm run node` 启动时终端里打印的 Account #0 的 Private Key）
+- 打开前端页面，连接钱包并切换到 Localhost 网络即可联调
+
+### 说明
+
+- 联调环境仅支持**公开投票**；创建匿名/加密投票会 revert。
+- 完整功能（含匿名、加密）请使用：`npm run deploy:local`（需先 `npm run node`）。

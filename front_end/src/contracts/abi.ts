@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-13T21:06:49.679Z
+ * 最后更新: 2026-02-22T12:52:52.442Z
  */
 
 export const VotingCoreABI = [
@@ -123,7 +123,6 @@ export const VotingFactoryABI = [
   
   // 最小查询（供 QueryCenter 和内部使用）
   "function votingCount() view returns (uint256)",
-  "function encryptedVoting() view returns (address)",
   "function getEffectiveState(uint256 votingId) view returns (uint8)",
   "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
   "function getExecutionCenterAddress() view returns (address)",
@@ -134,21 +133,10 @@ export const VotingFactoryABI = [
  */
 export const ExecutionCenterABI = [
   "function canExecute(uint256 votingId) view returns (bool canExec, string reason)",
-  "function canExecuteFor(uint256 votingId, address executor) view returns (bool canExec, string reason)",
   "function execute(uint256 votingId)",
-  "function cancelTimelock(uint256 votingId)",
-  "function getExecutionConfig(uint256 votingId) view returns (uint8 mode, address target, uint256 value, bytes calldataBytes, uint256 executeOnWinningOption, address multisigAddress, uint256 timelockDelaySeconds, uint256 executeAfter, address creator, bool isSet, bool executed, bool cancelled)",
+  "function getExecutionConfig(uint256 votingId) view returns (address target, uint256 value, bytes calldataBytes, uint256 executeOnWinningOption, bool isSet, bool executed)",
   "function executed(uint256 votingId) view returns (bool)",
 ] as const;
-
-/** 执行模式 */
-export const ExecutionMode = {
-  None: 0,        // 链下通知
-  OnChainAuto: 1, // 链上自动执行
-  MultiSig: 2,    // 多签触发
-  Timelock: 3,    // 延迟执行
-} as const;
-export type ExecutionMode = (typeof ExecutionMode)[keyof typeof ExecutionMode];
 
 /**
  * 匿名投票合约 ABI（注册、投票、Semaphore 群组查询）
@@ -163,17 +151,14 @@ export const AnonymousVotingABI = [
   "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
-  "function castVoteFullPrivacy(uint256 votingId, bytes encryptedBallot, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
-  "function castVoteFullPrivacyWeighted(uint256 votingId, bytes encryptedBallot, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
 ] as const;
 
 /**
- * 加密投票合约 ABI
+ * 加密投票合约 ABI（同态加密选票提交）
  */
 export const EncryptedVotingABI = [
-  "function castVoteEncrypted(uint256 votingId, bytes encryptedBallot)",
-  "function submitTallyResult(uint256 votingId, uint256 totalBallots, uint256[] decryptedCounts)",
-  "function approveTallyResult(uint256 votingId)",
+  "function initializeEncryptedVoting(uint256 votingId)",
+  "function castVoteEncrypted(uint256 votingId, bytes calldata encryptedBallot)",
 ] as const;
 
 /**
@@ -248,6 +233,17 @@ export const RegistrationRule = {
 export type RegistrationRule = (typeof RegistrationRule)[keyof typeof RegistrationRule];
 
 /**
+ * 执行模式
+ */
+export const ExecutionMode = {
+  None: 0,
+  OnChainAuto: 1,
+  MultiSig: 2,
+  Timelock: 3,
+} as const;
+export type ExecutionMode = (typeof ExecutionMode)[keyof typeof ExecutionMode];
+
+/**
  * 合约地址配置
  * ⚠️ 地址由部署脚本自动更新
  */
@@ -266,15 +262,15 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingCore: "0x610178da211fef7d417bc0e6fed39f05609ad788" as const,
-    votingFactory: "0x610178da211fef7d417bc0e6fed39f05609ad788",
-    anonymousVoting: "0xb7f8bc63bbcad18155201308c8f3540b07f84f5e",
-    registrationCenter: "0x0165878a594ca255338adfa4d48449f69242eb8f",
-    votingCenter: "0xa513e6e4b8f2a923d98304ec87f64353c4d5c853",
-    revealCenter: "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6",
-    statisticsCenter: "0x8a791620dd6260079bf849dc5567adc3f2fdc318",
-    executionCenter: "0x0000000000000000000000000000000000000000",
-    queryCenter: "0xa51c1fc2f0d1a1b8494ed1fe312d7c3a78ed91c0",
+    votingCore: "0x5fbdb2315678afecb367f032d93f642f64180aa3" as const,
+    votingFactory: "0x5fbdb2315678afecb367f032d93f642f64180aa3",
+    anonymousVoting: "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6",
+    registrationCenter: "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512",
+    votingCenter: "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
+    revealCenter: "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9",
+    statisticsCenter: "0xdc64a140aa3e981100a9beca4e685f962f0cf6c9",
+    executionCenter: "0x5fc8d32690cc91d4c39d9d3abcbd16989f875707",
+    queryCenter: "0x9a676e781a523b5d0c0e43731313a708cb607508",
   },
 } as const;
 
