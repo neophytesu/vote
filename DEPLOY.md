@@ -36,8 +36,9 @@ npm run node
 npm run deploy:local
 ```
 
-- **已知问题**：部署 PoseidonT3 等大型 Semaphore 合约时，Hardhat 3 + localhost 节点可能出现 `Internal error (code: -32603)`
-- 若失败，使用 `deploy:local:no-anonymous` 或 `deploy:hardhat`
+- **说明**：`hardhat node` 使用的是配置里的 **`networks.default`**（EDR 模拟网），需开启 `allowUnlimitedContractSize`，否则部署 PoseidonT3 等超大合约会因 EIP-170 限制出现 `Internal error (code: -32603)`。本仓库已在 `hardhat.config.ts` 中为 `default` 开启该选项。
+- **修改过 Hardhat 配置后**：请**重启** `npm run node` 再跑 `deploy:local`。
+- 若仍失败，可改用 `deploy:local:no-anonymous` 或 `deploy:hardhat`。
 
 ### 方案 3：Sepolia 测试网
 

@@ -7,12 +7,22 @@ import {
   QueryCenterABI,
   RegistrationCenterABI,
   ExecutionCenterABI,
+  VotingCenterABI,
+  StatisticsCenterABI,
   VotingState,
   VotingRule,
   PrivacyLevel,
   RegistrationRule,
   getContractAddresses,
 } from "@/contracts/abi";
+import { fetchFullPrivacyBallotHexes } from "@/utils/fullPrivacyTally";
+import {
+  aggregateEncryptedBallots,
+  decryptTally,
+  deserializePrivateKey,
+  parsePublicKeyFromDescription,
+  type PaillierPrivateKeyJson,
+} from "@/utils/paillierVoting";
 
 /**
  * 投票详情接口（来自合约）
@@ -34,6 +44,8 @@ export interface VotingDetails {
   totalVoters: number;
   totalVotes: number;
   voteCounts: number[];
+  /** 加密/完全隐私：解密计票写入前，链上可见的已提交选票数（FullPrivacy=encryptedBallotCount；Encrypted=统计中心 voteCount） */
+  opaqueBallotsCast?: number;
   resultRevealed: boolean;
   createdAt: number;
   autoAdvance: boolean;  // 是否自动推进状态
@@ -236,6 +248,24 @@ export function useVotingFactory(chainId: number | null) {
     [getAnonymousReadOnlyContract]
   );
 
+  /** 简单多数/排序/二次方：是否已为该投票创建 Semaphore 主群组（groupId 可能为 0，属正常） */
+  const hasSemaphoreGroup = useCallback(
+    async (votingId: number): Promise<boolean> => {
+      const c = await getAnonymousReadOnlyContract();
+      return Boolean(await c.hasSemaphoreGroup(votingId));
+    },
+    [getAnonymousReadOnlyContract]
+  );
+
+  /** 加权：某权重分组是否已建群 */
+  const isWeightGroupCreated = useCallback(
+    async (votingId: number, groupIndex: number): Promise<boolean> => {
+      const c = await getAnonymousReadOnlyContract();
+      return Boolean(await c.isWeightGroupCreated(votingId, groupIndex));
+    },
+    [getAnonymousReadOnlyContract]
+  );
+
   // 获取 Provider（用于查询事件等）
   const getProvider = useCallback(async () => {
     if (!window.ethereum || !chainId) throw new Error("请先连接钱包");
@@ -332,6 +362,41 @@ export function useVotingFactory(chainId: number | null) {
       revealDelay: d.revealDelay != null ? Number(d.revealDelay) : 0,
     };
   };
+
+  const enrichOpaqueBallots = useCallback(
+    async (d: VotingDetails): Promise<VotingDetails> => {
+      const zero = "0x0000000000000000000000000000000000000000";
+      if (!chainId || typeof window === "undefined" || !window.ethereum) {
+        return { ...d, opaqueBallotsCast: undefined };
+      }
+      if (
+        d.resultRevealed ||
+        (d.privacyLevel !== PrivacyLevel.Encrypted && d.privacyLevel !== PrivacyLevel.FullPrivacy)
+      ) {
+        return { ...d, opaqueBallotsCast: undefined };
+      }
+      if (d.totalVotes > 0) {
+        return { ...d, opaqueBallotsCast: undefined };
+      }
+      const addresses = getContractAddresses(chainId);
+      const provider = new BrowserProvider(window.ethereum);
+      try {
+        if (d.privacyLevel === PrivacyLevel.FullPrivacy) {
+          if (addresses.votingCenter === zero) return { ...d, opaqueBallotsCast: undefined };
+          const vc = new Contract(addresses.votingCenter, VotingCenterABI, provider);
+          const n = (await vc.encryptedBallotCount(d.id)) as bigint;
+          return { ...d, opaqueBallotsCast: Number(n) };
+        }
+        if (addresses.statisticsCenter === zero) return { ...d, opaqueBallotsCast: undefined };
+        const sc = new Contract(addresses.statisticsCenter, StatisticsCenterABI, provider);
+        const stats = (await sc.getVotingStats(d.id)) as { voteCount: bigint };
+        return { ...d, opaqueBallotsCast: Number(stats.voteCount) };
+      } catch {
+        return { ...d, opaqueBallotsCast: undefined };
+      }
+    },
+    [chainId]
+  );
 
   /**
    * 创建新投票
@@ -920,6 +985,88 @@ export function useVotingFactory(chainId: number | null) {
   );
 
   /**
+   * 完全隐私（简单多数 / 加权）：从链上拉取加密选票 → 同态聚合 → 本地 Paillier 解密 → EncryptedVoting.submitTallyResult
+   * @param description 须含 <!--PAILLIER_PK:...-->（与链上一致）
+   * @returns 同步返回 error 文案，避免调用方读到尚未更新的 React state
+   */
+  const submitFullPrivacyDecryptedTally = useCallback(
+    async (
+      votingId: number,
+      description: string,
+      optionCount: number
+    ): Promise<{ ok: boolean; error: string | null }> => {
+      const zero = "0x0000000000000000000000000000000000000000";
+      setState((prev) => ({ ...prev, isLoading: true, error: null }));
+      try {
+        if (!chainId || typeof window === "undefined") {
+          throw new Error("请先连接钱包");
+        }
+        const skRaw = localStorage.getItem(`paillier-sk-${votingId}`);
+        if (!skRaw) {
+          throw new Error("未找到 Paillier 私钥（创建投票时保存在本浏览器），无法解密计票");
+        }
+        if (!parsePublicKeyFromDescription(description)) {
+          throw new Error("提案描述中未找到 Paillier 公钥");
+        }
+        const privateKey = deserializePrivateKey(JSON.parse(skRaw) as PaillierPrivateKeyJson);
+        const publicKey = privateKey.publicKey;
+
+        const provider = await getProvider();
+        const addresses = getContractAddresses(chainId);
+        if (!addresses.anonymousVoting || addresses.anonymousVoting === zero) {
+          throw new Error("AnonymousVoting 未部署");
+        }
+        if (!addresses.votingCenter || addresses.votingCenter === zero) {
+          throw new Error("VotingCenter 未部署");
+        }
+
+        const ballotHexes = await fetchFullPrivacyBallotHexes(
+          provider,
+          addresses.anonymousVoting,
+          votingId,
+          0
+        );
+        if (ballotHexes.length === 0) {
+          throw new Error(
+            "未从链上找到完全隐私选票（FullPrivacyBallotCast）。请确认：1）投票阶段已用当前网络成功投票；2）abi.ts 中 AnonymousVoting 含 castVoteFullPrivacy 与事件；3）前端合约地址与节点一致。"
+          );
+        }
+
+        const vc = new Contract(addresses.votingCenter, VotingCenterABI, provider);
+        const onChainCount = Number(await vc.encryptedBallotCount(votingId));
+        if (onChainCount > 0 && ballotHexes.length !== onChainCount) {
+          throw new Error(
+            `链上加密选票数（${onChainCount}）与解析到的交易数（${ballotHexes.length}）不一致，请检查节点或稍后重试`
+          );
+        }
+
+        const aggregated = aggregateEncryptedBallots(publicKey, ballotHexes);
+        const counts = decryptTally(privateKey, aggregated);
+        if (counts.length !== optionCount) {
+          throw new Error(`解密得票项数为 ${counts.length}，与选项数 ${optionCount} 不符`);
+        }
+        const decryptedCounts = counts.map((c) => Math.max(0, Math.round(Number(c))));
+
+        const enc = await getEncryptedContract();
+        const tx = await enc.submitTallyResult(votingId, ballotHexes.length, decryptedCounts);
+        await tx.wait();
+        setState((prev) => ({ ...prev, isLoading: false, error: null }));
+        return { ok: true, error: null };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error("submitFullPrivacyDecryptedTally:", err);
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: msg || "提交解密计票失败",
+        }));
+        return { ok: false, error: msg || "提交解密计票失败" };
+      }
+    },
+    [chainId, getProvider, getEncryptedContract]
+  );
+
+  /**
    * 完全隐私投票 - Semaphore 证明 + 加密选票（简单多数/排序选择/二次方）
    */
   const castVoteFullPrivacy = useCallback(
@@ -1424,13 +1571,13 @@ export function useVotingFactory(chainId: number | null) {
       try {
         const contract = await getQueryContract();
         const data = await contract.getVoting(votingId);
-        return parseVotingDetails(data);
+        return enrichOpaqueBallots(parseVotingDetails(data));
       } catch (err) {
         console.error("获取投票失败:", err);
         return null;
       }
     },
-    [getQueryContract]
+    [getQueryContract, enrichOpaqueBallots]
   );
 
   /**
@@ -1447,7 +1594,7 @@ export function useVotingFactory(chainId: number | null) {
 
       for (let i = 1; i <= Number(count); i++) {
         const data = await queryContract.getVoting(i);
-        votings.push(parseVotingDetails(data));
+        votings.push(await enrichOpaqueBallots(parseVotingDetails(data)));
       }
 
       setState((prev) => ({ ...prev, isLoading: false, votings }));
@@ -1461,7 +1608,7 @@ export function useVotingFactory(chainId: number | null) {
       }));
       return [];
     }
-  }, [getReadOnlyContract, getQueryContract]);
+  }, [getReadOnlyContract, getQueryContract, enrichOpaqueBallots]);
 
   /**
    * 获取最近的投票
@@ -1471,13 +1618,15 @@ export function useVotingFactory(chainId: number | null) {
       try {
         const contract = await getQueryContract();
         const data = await contract.getRecentVotings(count);
-        return data.map(parseVotingDetails);
+        return await Promise.all(
+          (data as unknown[]).map((row) => enrichOpaqueBallots(parseVotingDetails(row)))
+        );
       } catch (err) {
         console.error("获取最近投票失败:", err);
         return [];
       }
     },
-    [getQueryContract]
+    [getQueryContract, enrichOpaqueBallots]
   );
 
   /**
@@ -1492,7 +1641,7 @@ export function useVotingFactory(chainId: number | null) {
 
         for (const id of ids) {
           const data = await contract.getVoting(id);
-          votings.push(parseVotingDetails(data));
+          votings.push(await enrichOpaqueBallots(parseVotingDetails(data)));
         }
 
         return votings;
@@ -1501,7 +1650,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getQueryContract]
+    [getQueryContract, enrichOpaqueBallots]
   );
 
   /**
@@ -1516,7 +1665,7 @@ export function useVotingFactory(chainId: number | null) {
 
         for (const id of ids) {
           const data = await contract.getVoting(id);
-          votings.push(parseVotingDetails(data));
+          votings.push(await enrichOpaqueBallots(parseVotingDetails(data)));
         }
 
         return votings;
@@ -1525,7 +1674,7 @@ export function useVotingFactory(chainId: number | null) {
         return [];
       }
     },
-    [getQueryContract]
+    [getQueryContract, enrichOpaqueBallots]
   );
 
   /**
@@ -1703,6 +1852,8 @@ export function useVotingFactory(chainId: number | null) {
     getSemaphoreAddress,
     getVotingSemaphoreGroupId,
     getVotingSemaphoreGroupIdByWeight,
+    hasSemaphoreGroup,
+    isWeightGroupCreated,
     createVoting,
     startRegistration,
     cancelVoting,
@@ -1728,6 +1879,7 @@ export function useVotingFactory(chainId: number | null) {
     castVoteEncrypted,
     submitTallyResult,
     approveTallyResult,
+    submitFullPrivacyDecryptedTally,
     castVoteFullPrivacy,
     castVoteFullPrivacyWeighted,
     getEncryptedVotingAddress,

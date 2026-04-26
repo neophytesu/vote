@@ -154,8 +154,16 @@ export function parsePublicKeyFromDescription(description: string): PaillierPubl
   }
 }
 
+/** UI 展示用：去掉链上 description 末尾嵌入的 Paillier 公钥注释（解析公钥请仍用原始字符串） */
+export function stripPublicKeyFromDescription(description: string): string {
+  return description
+    .replace(/<!--PAILLIER_PK:[\s\S]*?-->/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimEnd();
+}
+
 /**
- * 将公钥追加到描述末尾（不修改原始描述显示）
+ * 将公钥追加到描述末尾（链上仅存 description 时的权宜之计；展示请用 stripPublicKeyFromDescription）
  */
 export function appendPublicKeyToDescription(
   description: string,

@@ -2,7 +2,7 @@
  * 投票系统合约 ABI
  * 
  * ⚠️ 此文件由部署脚本自动生成，请勿手动修改地址部分
- * 最后更新: 2026-02-22T12:52:52.442Z
+ * 最后更新: 2026-04-26T11:57:52.385Z
  */
 
 export const VotingCoreABI = [
@@ -49,6 +49,7 @@ export const VotingCenterABI = [
   "function getVoteCount(uint256 proposalId, uint256 optionIndex) view returns (uint256)",
   "function getAllVoteCounts(uint256 proposalId) view returns (uint256[])",
   "function getTotalVotes(uint256 proposalId) view returns (uint256)",
+  "function encryptedBallotCount(uint256 proposalId) view returns (uint256)",
 ] as const;
 
 export const RevealCenterABI = [
@@ -126,6 +127,7 @@ export const VotingFactoryABI = [
   "function getEffectiveState(uint256 votingId) view returns (uint8)",
   "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
   "function getExecutionCenterAddress() view returns (address)",
+  "function encryptedVoting() view returns (address)",
 ] as const;
 
 /**
@@ -143,6 +145,8 @@ export const ExecutionCenterABI = [
  */
 export const AnonymousVotingABI = [
   "function semaphore() view returns (address)",
+  "function hasSemaphoreGroup(uint256 votingId) view returns (bool)",
+  "function isWeightGroupCreated(uint256 votingId, uint256 groupIndex) view returns (bool)",
   "function votingSemaphoreGroupId(uint256 votingId) view returns (uint256)",
   "function votingSemaphoreGroupIdByWeight(uint256 votingId, uint256 groupIndex) view returns (uint256)",
   "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
@@ -151,6 +155,9 @@ export const AnonymousVotingABI = [
   "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacy(uint256 votingId, bytes encryptedBallot, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacyWeighted(uint256 votingId, bytes encryptedBallot, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "event FullPrivacyBallotCast(uint256 indexed votingId, bytes32 ballotHash, uint256 nullifierHash)",
 ] as const;
 
 /**
@@ -159,6 +166,8 @@ export const AnonymousVotingABI = [
 export const EncryptedVotingABI = [
   "function initializeEncryptedVoting(uint256 votingId)",
   "function castVoteEncrypted(uint256 votingId, bytes calldata encryptedBallot)",
+  "function submitTallyResult(uint256 votingId, uint256 totalBallots, uint256[] decryptedCounts)",
+  "function approveTallyResult(uint256 votingId)",
 ] as const;
 
 /**
@@ -262,15 +271,15 @@ export const CONTRACT_ADDRESSES = {
   },
   // 本地开发网络 - 自动更新
   localhost: {
-    votingCore: "0x5fbdb2315678afecb367f032d93f642f64180aa3" as const,
-    votingFactory: "0x5fbdb2315678afecb367f032d93f642f64180aa3",
-    anonymousVoting: "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6",
-    registrationCenter: "0xe7f1725e7734ce288f8367e1bb143e90bb3f0512",
-    votingCenter: "0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0",
-    revealCenter: "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9",
-    statisticsCenter: "0xdc64a140aa3e981100a9beca4e685f962f0cf6c9",
-    executionCenter: "0x5fc8d32690cc91d4c39d9d3abcbd16989f875707",
-    queryCenter: "0x9a676e781a523b5d0c0e43731313a708cb607508",
+    votingCore: "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9" as const,
+    votingFactory: "0xcf7ed3acca5a467e9e704c703e8d87f634fb0fc9",
+    anonymousVoting: "0xb7f8bc63bbcad18155201308c8f3540b07f84f5e",
+    registrationCenter: "0xdc64a140aa3e981100a9beca4e685f962f0cf6c9",
+    votingCenter: "0x5fc8d32690cc91d4c39d9d3abcbd16989f875707",
+    revealCenter: "0x0165878a594ca255338adfa4d48449f69242eb8f",
+    statisticsCenter: "0xa513e6e4b8f2a923d98304ec87f64353c4d5c853",
+    executionCenter: "0x2279b7a0a67db372996a5fab50d91eaa73d2ebe6",
+    queryCenter: "0x0dcd1bf9a1b36ce34237eeafef220932846bcd82",
   },
 } as const;
 
@@ -285,6 +294,7 @@ export function getContractAddresses(chainId: number) {
     case 1337: // Local dev
       return CONTRACT_ADDRESSES.localhost;
     default:
-      return CONTRACT_ADDRESSES.localhost;
+      // 非本地链勿回退到 localhost 地址，避免在主网误读合约（如 groupId 全为 0）
+      return CONTRACT_ADDRESSES.sepolia;
   }
 }

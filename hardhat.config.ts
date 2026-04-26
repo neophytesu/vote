@@ -34,6 +34,13 @@ export default defineConfig({
     },
   },
   networks: {
+    // `hardhat node` 绑定的是 networks.default，与 `hardhat` 无关；大合约需 unlimited size。
+    default: {
+      type: "edr-simulated",
+      chainType: "l1",
+      blockGasLimit: 30_000_000,
+      allowUnlimitedContractSize: true,
+    },
     hardhat: {
       type: "edr-simulated",
       chainType: "l1",

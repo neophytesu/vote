@@ -65,6 +65,11 @@ contract AnonymousVoting is IVotingTypes {
         return _votingHasSemaphoreGroup[votingId];
     }
 
+    /// @notice 加权匿名/完全隐私：该权重分组是否已创建 Semaphore 群（供前端校验，避免误将 groupId==0 当作无效）
+    function isWeightGroupCreated(uint256 votingId, uint256 groupIndex) external view returns (bool) {
+        return _votingWeightGroupCreated[votingId][groupIndex];
+    }
+
     constructor(
         address _votingFactory,
         address _semaphore,
@@ -100,6 +105,7 @@ contract AnonymousVoting is IVotingTypes {
                 votingSemaphoreGroupIdByWeight[votingId][i] = gid;
                 _votingWeightGroupCreated[votingId][i] = true;
             }
+            _votingHasSemaphoreGroup[votingId] = true;
         } else {
             uint256 groupId = semaphore.createGroup(address(this));
             votingSemaphoreGroupId[votingId] = groupId;

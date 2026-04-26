@@ -29,7 +29,7 @@ import {
   checkVisibility,
   VisibilityLevel,
 } from "@/contracts/visibility";
-import { parsePublicKeyFromDescription } from "@/utils/paillierVoting";
+import { parsePublicKeyFromDescription, stripPublicKeyFromDescription } from "@/utils/paillierVoting";
 import { useVotingFactory, type VotingDetails } from "@/hooks/useVotingFactory";
 import { useStatisticsCenter } from "@/hooks/useStatisticsCenter";
 import {
@@ -42,7 +42,6 @@ import {
   Timer,
   Crown,
   Calendar,
-  KeyRound,
   TreeDeciduous,
   BarChart3,
   Hash,
@@ -66,6 +65,9 @@ interface LocalProposal {
   voteCounts: number[];
   totalVoters: number;
   totalVotesCast: number;  // 独立的投票人数（来自合约，RCV 期间 voteCounts 为 0 但此值正确）
+  /** 加密/完全隐私且尚未写入计票结果时，链上可见的已提交选票数 */
+  opaqueBallotsCast?: number;
+  resultRevealed: boolean;
   endTime: string;
   privacy: PrivacyLevel;
   rule: VotingRule;
@@ -100,6 +102,8 @@ function convertToLocalProposal(voting: VotingDetails, userStatus?: { registered
     voteCounts: voting.voteCounts,
     totalVoters: voting.totalVoters,
     totalVotesCast: voting.totalVotes,
+    opaqueBallotsCast: voting.opaqueBallotsCast,
+    resultRevealed: voting.resultRevealed,
     endTime: voting.useBlockNumber ? new Date(voting.votingEnd * 12 * 1000).toISOString() : new Date(voting.votingEnd * 1000).toISOString(), // 区块模式用 ~12s/块估算
     privacy: voting.privacyLevel,
     rule: voting.votingRule,
@@ -674,6 +678,8 @@ interface ProposalCardProps {
   onStartRegistration: (proposalId: number) => void;
   onStartVoting: (proposalId: number) => void;
   onStartTallying: (proposalId: number) => void;
+  /** 完全隐私：计票阶段从链上密文解密并 submitTallyResult（创建者） */
+  onSubmitFullPrivacyTally?: (proposalId: number) => Promise<void>;
   onRevealResult: (proposalId: number) => void;
   onCanExecuteProposal?: (proposalId: number, executor?: string) => Promise<{ canExec: boolean; reason: string }>;
   onExecuteProposal?: (proposalId: number) => Promise<boolean>;
@@ -860,7 +866,7 @@ const optionColorConfig = [
   { bg: "bg-cyan-500", text: "text-cyan-400", gradient: "from-cyan-500 to-cyan-400" },
 ];
 
-function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteEncrypted, onVoteFullPrivacy, onVoteFullPrivacyWeighted, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onRevealResult, onCanExecuteProposal, onExecuteProposal, onCancelTimelock, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
+function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onRegisterAnonymousWeighted, onRegisterWeighted, onVote, onVoteAnonymous, onVoteEncrypted, onVoteFullPrivacy, onVoteFullPrivacyWeighted, onVoteAnonymousRanked, onVoteAnonymousQuadratic, onQuadraticVote, onRankedVote, onStartRegistration, onStartVoting, onStartTallying, onSubmitFullPrivacyTally, onRevealResult, onCanExecuteProposal, onExecuteProposal, onCancelTimelock, onCancelVoting, onExtendRegistrationEnd, onExtendVotingEnd, getBlockNumber, getChainTimestamp, onLoadVoteRecords, onLoadRankedVoteRecords, onLoadRegisteredVoters, onApproveRegistration, onRejectRegistration, onBatchApproveRegistrations, onLoadPendingVoters }: ProposalCardProps) {
   const [showVoteDetails, setShowVoteDetails] = useState(false);
   const [showResultDialog, setShowResultDialog] = useState(false);
   const [showVoterListDialog, setShowVoterListDialog] = useState(false);
@@ -881,6 +887,7 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
   const [pendingVoters, setPendingVoters] = useState<string[]>([]);
   const [voterListAddresses, setVoterListAddresses] = useState<string[]>([]);
   const [loadingVoterList, setLoadingVoterList] = useState(false);
+  const [fullPrivacyTallyLoading, setFullPrivacyTallyLoading] = useState(false);
   const [voteRecords, setVoteRecords] = useState<VoteRecord[]>([]);
   const [rankedVoteRecords, setRankedVoteRecords] = useState<RankedVoteRecord[]>([]);
   const [notVotedAddresses, setNotVotedAddresses] = useState<string[]>([]);
@@ -918,10 +925,24 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
   }, [proposal.status, proposal.id, onCanExecuteProposal, wallet.address]);
 
   const totalVotes = proposal.voteCounts.reduce((a, b) => a + b, 0);
+  const opaque = proposal.opaqueBallotsCast ?? 0;
+  const encFamily =
+    proposal.privacy === PrivacyLevel.Encrypted || proposal.privacy === PrivacyLevel.FullPrivacy;
+  const showOpaqueTurnout =
+    encFamily &&
+    !proposal.resultRevealed &&
+    proposal.totalVotesCast === 0 &&
+    opaque > 0;
+  const participationNumerator = showOpaqueTurnout
+    ? opaque
+    : totalVotes > 0
+      ? totalVotes
+      : proposal.totalVotesCast;
   const participationRate =
     proposal.totalVoters > 0
-      ? ((totalVotes / proposal.totalVoters) * 100).toFixed(1)
+      ? ((participationNumerator / proposal.totalVoters) * 100).toFixed(1)
       : "0";
+  const turnoutForProgressBar = showOpaqueTurnout ? opaque : proposal.totalVotesCast;
 
   // 计算各选项百分比
   const optionPercentages = proposal.voteCounts.map(count => 
@@ -1007,7 +1028,7 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
               {proposal.title}
             </CardTitle>
             <CardDescription className="mt-1 line-clamp-2">
-              {proposal.description}
+              {stripPublicKeyFromDescription(proposal.description)}
             </CardDescription>
           </div>
           <Badge
@@ -1067,8 +1088,10 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
           )}
         </div>
 
-        {/* 投票进度 - 支持多选项，根据可见性配置控制显示 */}
-        {proposal.status === VotingState.Voting || proposal.status === VotingState.Finalized ? (
+        {/* 投票进度 - 支持多选项，根据可见性配置控制显示（计票阶段仍可能尚未写入解密结果） */}
+        {proposal.status === VotingState.Voting ||
+        proposal.status === VotingState.Tallying ||
+        proposal.status === VotingState.Finalized ? (
           <div className="space-y-3">
             {/* 排序选择投票：投票阶段只显示参与人数，不显示逐选项票数 */}
             {proposal.rule === VotingRule.RankedChoice && proposal.status === VotingState.Voting ? (
@@ -1078,13 +1101,13 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                     <div className="flex items-center gap-2 text-zinc-300">
                       <Users className="w-5 h-5 text-violet-400" />
                       <span className="text-lg font-semibold">
-                        已投票 {proposal.totalVotesCast.toLocaleString()} / {proposal.totalVoters.toLocaleString()} 人
+                        已投票 {turnoutForProgressBar.toLocaleString()} / {proposal.totalVoters.toLocaleString()} 人
                       </span>
                     </div>
                     <div className="w-full h-3 bg-zinc-800 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-all duration-500"
-                        style={{ width: `${proposal.totalVoters > 0 ? (proposal.totalVotesCast / proposal.totalVoters) * 100 : 0}%` }}
+                        style={{ width: `${proposal.totalVoters > 0 ? (turnoutForProgressBar / proposal.totalVoters) * 100 : 0}%` }}
                       />
                     </div>
                     <p className="text-xs text-zinc-500">
@@ -1141,6 +1164,15 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                     </p>
                   </div>
                 )}
+
+                {showOpaqueTurnout &&
+                  (proposal.status === VotingState.Voting || proposal.status === VotingState.Tallying) && (
+                  <p className="text-xs text-amber-200/90 text-center rounded-md bg-amber-950/35 border border-amber-500/20 py-2 px-2">
+                    {proposal.privacy === PrivacyLevel.FullPrivacy
+                      ? "完全隐私：链上仅累计加密选票数，各选项得票需在创建者解密计票并提交结果后才会显示。"
+                      : "加密投票：各选项得票在解密计票写入链上前不会显示；下方参与率按已提交加密选票计。"}
+                  </p>
+                )}
                 
                 {/* RCV 已完成提示 */}
                 {proposal.rule === VotingRule.RankedChoice && proposal.status === VotingState.Finalized && canViewResult && (
@@ -1152,7 +1184,8 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                 {/* 参与率 - 根据进度可见性控制 */}
                 {canViewProgress ? (
                   <p className="text-xs text-zinc-500 text-center pt-1">
-                    参与率: {participationRate}% ({totalVotes.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
+                    参与率: {participationRate}% ({participationNumerator.toLocaleString()} / {proposal.totalVoters.toLocaleString()})
+                    {showOpaqueTurnout ? " · 按已收加密选票" : ""}
                   </p>
                 ) : (
                   <p className="text-xs text-zinc-600 text-center pt-1">
@@ -1744,7 +1777,9 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                 <DialogContent className="bg-zinc-900 border-zinc-800 text-zinc-100">
                   <DialogHeader>
                     <DialogTitle className="text-zinc-100">{proposal.title}</DialogTitle>
-                    <DialogDescription className="text-zinc-400">{proposal.description}</DialogDescription>
+                    <DialogDescription className="text-zinc-400">
+                      {stripPublicKeyFromDescription(proposal.description)}
+                    </DialogDescription>
                   </DialogHeader>
                   <VoteDialog 
                     options={proposal.options}
@@ -1793,15 +1828,37 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
             </>
           )}
 
-          {/* 计票阶段按钮 */}
+          {/* 计票阶段：完全隐私须先链下解密并 submitTallyResult，再揭示 */}
           {proposal.status === VotingState.Tallying && canAdvanceState && (
-            <Button 
-              onClick={() => onRevealResult(proposal.id)}
-              disabled={!wallet.isConnected}
-              className="flex-1 bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 disabled:opacity-50"
-            >
-              {proposal.autoAdvance ? "推进到完成" : "揭示结果"}
-            </Button>
+            <div className="flex flex-col sm:flex-row gap-2 flex-1 w-full">
+              {proposal.privacy === PrivacyLevel.FullPrivacy &&
+                (proposal.rule === VotingRule.SimpleMajority || proposal.rule === VotingRule.Weighted) &&
+                isCreator &&
+                onSubmitFullPrivacyTally && (
+                  <Button
+                    variant="outline"
+                    className="flex-1 border-amber-500/50 text-amber-200 hover:bg-amber-500/10 disabled:opacity-50"
+                    disabled={!wallet.isConnected || fullPrivacyTallyLoading}
+                    onClick={async () => {
+                      setFullPrivacyTallyLoading(true);
+                      try {
+                        await onSubmitFullPrivacyTally(proposal.id);
+                      } finally {
+                        setFullPrivacyTallyLoading(false);
+                      }
+                    }}
+                  >
+                    {fullPrivacyTallyLoading ? "解密并提交中..." : "解密并提交计票"}
+                  </Button>
+                )}
+              <Button
+                onClick={() => onRevealResult(proposal.id)}
+                disabled={!wallet.isConnected}
+                className="flex-1 bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 disabled:opacity-50"
+              >
+                {proposal.autoAdvance ? "推进到完成" : "揭示结果"}
+              </Button>
+            </div>
           )}
 
           {/* 已完成 - 查看结果 + 执行（若可执行） */}
@@ -1863,8 +1920,11 @@ function ProposalCard({ proposal, wallet, onRegister, onRegisterAnonymous, onReg
                         </span>
                       </div>
                     ) : (
-                      <div className="flex flex-col items-center py-6 space-y-2 text-zinc-500">
+                      <div className="flex flex-col items-center py-6 space-y-2 text-zinc-500 text-center px-2">
                         <p className="text-sm">暂无投票数据</p>
+                        <p className="text-xs text-zinc-600">
+                          完全隐私投票需在计票阶段先点击「解密并提交计票」再揭示；若已揭示仍为空，可能未提交解密结果或票数全为 0。
+                        </p>
                       </div>
                     )
                   ) : (
@@ -2465,10 +2525,6 @@ interface CreateProposalData {
   executionOnWinningOption?: number;
   executionMultisig?: string;
   executionTimelockDelay?: number;
-  // 加密/完全隐私投票可选：阈值解密（t-of-n 委员会确认计票结果）
-  useThresholdDecryption?: boolean;
-  thresholdCommittee?: string[];
-  thresholdT?: number;
   revealDelay?: number; // 结果揭示延迟：useBlockNumber 时为区块数，否则为秒数
   quorum?: number;    // 法定人数，达到后提案视为通过；0 表示不要求
 }
@@ -2527,11 +2583,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
   const [voterListVisibility, setVoterListVisibility] = useState<number>(1);
   const [resultVisibility, setResultVisibility] = useState<number>(3);
   const [progressVisibility, setProgressVisibility] = useState<number>(1);
-  // 加密投票可选：阈值解密（t-of-n 委员会）
-  const [useThresholdDecryption, setUseThresholdDecryption] = useState(false);
-  const [thresholdCommittee, setThresholdCommittee] = useState<string[]>([]);
-  const [thresholdCommitteeInput, setThresholdCommitteeInput] = useState("");
-  const [thresholdT, setThresholdT] = useState(1);
 
   // 可见性配置 - 统一定义
   const visibilityOptions = [
@@ -2653,10 +2704,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
     setExecutionOnWinningOption(0);
     setExecutionMultisig("");
     setExecutionTimelockDelay(86400);
-    setUseThresholdDecryption(false);
-    setThresholdCommittee([]);
-    setThresholdCommitteeInput("");
-    setThresholdT(1);
     setStep(1);
     setUiSections({
       votingRule: true,
@@ -2835,26 +2882,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       return;
     }
 
-    // 加密/完全隐私且启用阈值解密：提交前解析委员会并校验
-    let finalCommittee = thresholdCommittee;
-    if ((privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption) {
-      if (thresholdCommitteeInput.trim()) {
-        const parsed = parseAddressList(thresholdCommitteeInput);
-        finalCommittee = parsed.valid.slice(0, 50);
-      }
-      if (finalCommittee.length === 0) {
-        showToast("error", "请填写委员会成员地址", "启用阈值解密时至少需要 1 个委员会地址");
-        setIsSubmitting(false);
-        return;
-      }
-      const t = Math.max(1, Math.min(finalCommittee.length, thresholdT));
-      if (t < 1 || t > finalCommittee.length) {
-        showToast("error", "阈值 t 无效", "1 ≤ t ≤ 委员会人数");
-        setIsSubmitting(false);
-        return;
-      }
-    }
-
     const newProposal: CreateProposalData = {
       title: titleTrim,
       description: descTrim,
@@ -2896,9 +2923,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
       executionOnWinningOption,
       executionMultisig: executionMode === ExecutionMode.MultiSig ? executionMultisig : undefined,
       executionTimelockDelay: executionMode === ExecutionMode.Timelock ? executionTimelockDelay : undefined,
-      useThresholdDecryption: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) ? useThresholdDecryption : undefined,
-      thresholdCommittee: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption ? finalCommittee : undefined,
-      thresholdT: (privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && useThresholdDecryption ? Math.max(1, Math.min(finalCommittee.length, thresholdT)) : undefined,
       revealDelay: useBlockNumber ? revealDelay : revealDelay * 60,
     };
 
@@ -3353,61 +3377,6 @@ function CreateProposalCard({ wallet, onCreateProposal, showToast, getBlockNumbe
                             />
                           </div>
                         </div>
-
-                        {/* 加密/完全隐私：阈值解密选项 */}
-                        {(privacy === PrivacyLevel.Encrypted || privacy === PrivacyLevel.FullPrivacy) && (
-                          <div className="space-y-2 p-3 rounded-xl bg-zinc-800/50 border border-zinc-700">
-                            <p className="text-sm font-medium text-zinc-300 flex items-center gap-2">
-                              <Lock className="w-4 h-4" /> 阈值解密（可选）
-                            </p>
-                            <p className="text-xs text-zinc-500">
-                              启用后，计票结果需由 t-of-n 委员会成员确认后才生效，避免单点信任。
-                            </p>
-                            <label className="flex items-center gap-2 cursor-pointer">
-                              <input
-                                type="checkbox"
-                                checked={useThresholdDecryption}
-                                onChange={(e) => setUseThresholdDecryption(e.target.checked)}
-                                className="rounded border-zinc-600 bg-zinc-800 text-violet-500 focus:ring-violet-500"
-                              />
-                              <span className="text-sm text-zinc-300">使用阈值解密（委员会 t-of-n 确认）</span>
-                            </label>
-                            {useThresholdDecryption && (
-                              <div className="space-y-2 pl-6 border-l-2 border-violet-500/30">
-                                <div>
-                                  <label className="text-xs text-zinc-400">委员会成员地址（每行一个，最多 50 个）</label>
-                                  <textarea
-                                    value={thresholdCommitteeInput}
-                                    onChange={(e) => setThresholdCommitteeInput(e.target.value)}
-                                    onBlur={() => {
-                                      const parsed = parseAddressList(thresholdCommitteeInput);
-                                      if (parsed.invalid.length > 0) {
-                                        showToast("warning", "存在无效地址", `已忽略 ${parsed.invalid.length} 个无效的委员会地址`);
-                                      }
-                                      if (parsed.valid.length > 0) setThresholdCommittee(parsed.valid.slice(0, 50));
-                                    }}
-                                    placeholder="0x..."
-                                    className="mt-1 w-full px-3 py-2 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 placeholder-zinc-500 focus:border-violet-500 focus:outline-none min-h-[80px]"
-                                  />
-                                  {thresholdCommittee.length > 0 && (
-                                    <p className="text-xs text-zinc-500 mt-1">已解析 {thresholdCommittee.length} 个地址</p>
-                                  )}
-                                </div>
-                                <div>
-                                  <label className="text-xs text-zinc-400">阈值 t（至少 t 人确认后结果生效，1 ≤ t ≤ 委员会人数）</label>
-                                  <input
-                                    type="number"
-                                    min={1}
-                                    max={Math.max(1, thresholdCommittee.length)}
-                                    value={thresholdT}
-                                    onChange={(e) => setThresholdT(Math.max(1, Math.min(thresholdCommittee.length || 1, parseInt(e.target.value) || 1)))}
-                                    className="mt-1 w-24 px-2 py-1.5 bg-zinc-800 border border-zinc-700 rounded-lg text-sm text-zinc-100 focus:border-violet-500 focus:outline-none"
-                                  />
-                                </div>
-                              </div>
-                            )}
-                          </div>
-                        )}
                       </div>
                     )}
                   </div>
@@ -4215,11 +4184,6 @@ function TechStack() {
       desc: "成员资格证明",
       icon: TreeDeciduous,
     },
-    {
-      name: "阈值解密",
-      desc: "t-of-n 委员会协作",
-      icon: KeyRound,
-    },
   ];
 
   return (
@@ -4262,7 +4226,8 @@ function App() {
     if (!k) return list;
     return list.filter(
       (p) =>
-        p.title.toLowerCase().includes(k) || p.description.toLowerCase().includes(k)
+        p.title.toLowerCase().includes(k) ||
+        stripPublicKeyFromDescription(p.description).toLowerCase().includes(k)
     );
   }, [proposalSearchKeyword]);
 
@@ -4546,9 +4511,10 @@ function App() {
       const { deserializePublicKey, encryptVote } = await import("@/utils/paillierVoting");
       const publicKey = deserializePublicKey(pkJson);
       const encryptedHex = encryptVote(publicKey, optionIndex, optionCount);
+      addToast("info", "加密完成", "正在提交链上交易，请在钱包中确认");
       const success = await votingFactory.castVoteEncrypted(proposalId, encryptedHex);
       if (success) {
-        addToast("success", "投票成功", "您的加密选票已提交");
+        addToast("success", "投票已完成", "加密选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "加密投票失败", votingFactory.error);
@@ -4596,11 +4562,15 @@ function App() {
 
       const provider = await votingFactory.getProvider();
       const semaphoreAddress = await votingFactory.getSemaphoreAddress();
-      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
-      if (groupId === 0n) {
-        addToast("error", "完全隐私投票失败", "未找到 Semaphore 群组");
+      if (!(await votingFactory.hasSemaphoreGroup(proposalId))) {
+        addToast(
+          "error",
+          "完全隐私投票失败",
+          "当前投票未创建 Semaphore 群组（需匿名/完全隐私且全量部署；Semaphore 首个 groupId 为 0 是正常现象）"
+        );
         return;
       }
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
 
       const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
       if (commitments.length === 0) {
@@ -4612,6 +4582,7 @@ function App() {
       const scope = BigInt(proposalId);
       const message = 0n; // Full Privacy: message 必须为 0，选票内容在加密数据中
       const proof = await generateProof(identity, group, message, scope);
+      addToast("info", "证明与加密已完成", "正在提交链上交易，请在钱包中确认");
 
       const proofForContract = {
         merkleTreeDepth: proof.merkleTreeDepth,
@@ -4624,7 +4595,7 @@ function App() {
 
       const success = await votingFactory.castVoteFullPrivacy(proposalId, encryptedHex, proofForContract);
       if (success) {
-        addToast("success", "投票成功", "您的完全隐私投票已提交");
+        addToast("success", "投票已完成", "零知识证明与加密选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "完全隐私投票失败", votingFactory.error);
@@ -4672,11 +4643,11 @@ function App() {
 
       const provider = await votingFactory.getProvider();
       const semaphoreAddress = await votingFactory.getSemaphoreAddress();
-      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupIdByWeight(proposalId, groupIndex));
-      if (groupId === 0n) {
-        addToast("error", "完全隐私投票失败", "未找到 Semaphore 群组");
+      if (!(await votingFactory.isWeightGroupCreated(proposalId, groupIndex))) {
+        addToast("error", "完全隐私投票失败", "当前权重分组未创建 Semaphore 群组");
         return;
       }
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupIdByWeight(proposalId, groupIndex));
 
       const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
       if (commitments.length === 0) {
@@ -4688,6 +4659,7 @@ function App() {
       const scope = BigInt(proposalId);
       const message = 0n;
       const proof = await generateProof(identity, group, message, scope);
+      addToast("info", "证明与加密已完成", "正在提交链上交易，请在钱包中确认");
 
       const proofForContract = {
         merkleTreeDepth: proof.merkleTreeDepth,
@@ -4700,7 +4672,7 @@ function App() {
 
       const success = await votingFactory.castVoteFullPrivacyWeighted(proposalId, encryptedHex, groupIndex, proofForContract);
       if (success) {
-        addToast("success", "投票成功", "您的完全隐私投票已提交");
+        addToast("success", "投票已完成", "零知识证明与加密选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "完全隐私投票失败", votingFactory.error);
@@ -4742,13 +4714,18 @@ function App() {
       const identity = Identity.import(stored);
       const provider = await votingFactory.getProvider();
       const semaphoreAddress = await votingFactory.getSemaphoreAddress();
+      if (isWeighted) {
+        if (!(await votingFactory.isWeightGroupCreated(proposalId, groupIndex))) {
+          addToast("error", "匿名投票失败", "当前权重分组未创建 Semaphore 群组");
+          return;
+        }
+      } else if (!(await votingFactory.hasSemaphoreGroup(proposalId))) {
+        addToast("error", "匿名投票失败", "当前投票未创建 Semaphore 群组");
+        return;
+      }
       const groupId = isWeighted
         ? BigInt(await votingFactory.getVotingSemaphoreGroupIdByWeight(proposalId, groupIndex))
         : BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
-      if (groupId === 0n) {
-        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
-        return;
-      }
 
       const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
       if (commitments.length === 0) {
@@ -4760,6 +4737,7 @@ function App() {
       const scope = BigInt(proposalId);
       const message = BigInt(optionIndex);
       const proof = await generateProof(identity, group, message, scope);
+      addToast("info", "零知识证明已生成", "正在提交链上交易，请在钱包中确认");
 
       const proofForContract = {
         merkleTreeDepth: proof.merkleTreeDepth,
@@ -4774,7 +4752,7 @@ function App() {
         ? await votingFactory.castVoteAnonymousWeighted(proposalId, optionIndex, groupIndex, proofForContract)
         : await votingFactory.castVoteAnonymous(proposalId, optionIndex, proofForContract);
       if (success) {
-        addToast("success", "投票成功", "您的匿名投票已提交");
+        addToast("success", "投票已完成", "匿名选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "匿名投票失败", votingFactory.error);
@@ -4820,11 +4798,11 @@ function App() {
       const identity = Identity.import(stored);
       const provider = await votingFactory.getProvider();
       const semaphoreAddress = await votingFactory.getSemaphoreAddress();
-      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
-      if (groupId === 0n) {
-        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
+      if (!(await votingFactory.hasSemaphoreGroup(proposalId))) {
+        addToast("error", "匿名投票失败", "当前投票未创建 Semaphore 群组");
         return;
       }
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
 
       const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
       if (commitments.length === 0) {
@@ -4835,6 +4813,7 @@ function App() {
       const group = new Group(commitments);
       const scope = BigInt(proposalId);
       const proof = await generateProof(identity, group, encoded, scope);
+      addToast("info", "零知识证明已生成", "正在提交链上交易，请在钱包中确认");
 
       const proofForContract = {
         merkleTreeDepth: proof.merkleTreeDepth,
@@ -4847,7 +4826,7 @@ function App() {
 
       const success = await votingFactory.castVoteAnonymousRanked(proposalId, encoded, proofForContract);
       if (success) {
-        addToast("success", "投票成功", "您的匿名排序投票已提交");
+        addToast("success", "投票已完成", "匿名排序选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "匿名排序投票失败", votingFactory.error);
@@ -4897,11 +4876,11 @@ function App() {
       const identity = Identity.import(stored);
       const provider = await votingFactory.getProvider();
       const semaphoreAddress = await votingFactory.getSemaphoreAddress();
-      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
-      if (groupId === 0n) {
-        addToast("error", "匿名投票失败", "未找到 Semaphore 群组");
+      if (!(await votingFactory.hasSemaphoreGroup(proposalId))) {
+        addToast("error", "匿名投票失败", "当前投票未创建 Semaphore 群组");
         return;
       }
+      const groupId = BigInt(await votingFactory.getVotingSemaphoreGroupId(proposalId));
 
       const commitments = await fetchSemaphoreGroupMembers(provider, semaphoreAddress, groupId);
       if (commitments.length === 0) {
@@ -4912,6 +4891,7 @@ function App() {
       const group = new Group(commitments);
       const scope = BigInt(proposalId);
       const proof = await generateProof(identity, group, encoded, scope);
+      addToast("info", "零知识证明已生成", "正在提交链上交易，请在钱包中确认");
 
       const proofForContract = {
         merkleTreeDepth: proof.merkleTreeDepth,
@@ -4924,7 +4904,7 @@ function App() {
 
       const success = await votingFactory.castVoteAnonymousQuadratic(proposalId, encoded, proofForContract);
       if (success) {
-        addToast("success", "投票成功", "您的匿名二次方投票已提交");
+        addToast("success", "投票已完成", "匿名二次方选票已成功上链");
         refreshProposals();
       } else if (votingFactory.error) {
         addToast("error", "匿名二次方投票失败", votingFactory.error);
@@ -5089,6 +5069,34 @@ function App() {
     return success;
   }, [wallet.isConnected, votingFactory, refreshProposals, addToast]);
 
+  // 完全隐私：解密链上密文并提交计票（须在揭示前完成）
+  const handleSubmitFullPrivacyTally = useCallback(
+    async (proposalId: number) => {
+      const proposal = proposals.find((p) => p.id === proposalId);
+      if (!proposal) {
+        addToast("error", "计票失败", "找不到提案");
+        return;
+      }
+      if (!wallet.isConnected) {
+        addToast("warning", "请先连接钱包");
+        return;
+      }
+      addToast("info", "正在解密并提交计票...", "请稍候");
+      const { ok, error: tallyError } = await votingFactory.submitFullPrivacyDecryptedTally(
+        proposalId,
+        proposal.description,
+        proposal.options.length
+      );
+      if (ok) {
+        addToast("success", "解密计票已完成", "得票已写入链上，可继续点击「揭示结果」");
+        refreshProposals();
+      } else {
+        addToast("error", "计票失败", tallyError ?? "未知错误，请打开浏览器控制台查看详情");
+      }
+    },
+    [proposals, wallet.isConnected, votingFactory, refreshProposals, addToast]
+  );
+
   // 揭示结果
   const handleRevealResult = useCallback(async (proposalId: number) => {
     console.log("handleRevealResult: 点击揭示结果, proposalId:", proposalId);
@@ -5235,9 +5243,9 @@ function App() {
       executionOnWinningOption: proposalData.executionOnWinningOption ?? 0,
       executionMultisig: proposalData.executionMultisig || "0x0000000000000000000000000000000000000000",
       executionTimelockDelay: proposalData.executionTimelockDelay ?? 0,
-      useThresholdDecryption: proposalData.useThresholdDecryption ?? false,
-      thresholdCommittee: proposalData.thresholdCommittee ?? [],
-      thresholdT: proposalData.thresholdT ?? 0,
+      useThresholdDecryption: false,
+      thresholdCommittee: [],
+      thresholdT: 0,
       revealDelay: proposalData.revealDelay ?? 0,
     });
 
@@ -5426,6 +5434,7 @@ function App() {
                     onStartRegistration={handleStartRegistration}
                     onStartVoting={handleStartVoting}
                     onStartTallying={handleStartTallying}
+                    onSubmitFullPrivacyTally={handleSubmitFullPrivacyTally}
                     onRevealResult={handleRevealResult}
                     onCanExecuteProposal={votingFactory.canExecuteProposal}
                     onExecuteProposal={handleExecuteProposal}
@@ -5503,6 +5512,7 @@ function App() {
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
+                        onSubmitFullPrivacyTally={handleSubmitFullPrivacyTally}
                         onRevealResult={handleRevealResult}
                         onCanExecuteProposal={votingFactory.canExecuteProposal}
                         onExecuteProposal={handleExecuteProposal}
@@ -5579,6 +5589,7 @@ function App() {
                         onStartRegistration={handleStartRegistration}
                         onStartVoting={handleStartVoting}
                         onStartTallying={handleStartTallying}
+                        onSubmitFullPrivacyTally={handleSubmitFullPrivacyTally}
                         onRevealResult={handleRevealResult}
                         onCanExecuteProposal={votingFactory.canExecuteProposal}
                         onExecuteProposal={handleExecuteProposal}
@@ -5741,6 +5752,7 @@ function App() {
                             onStartRegistration={handleStartRegistration}
                             onStartVoting={handleStartVoting}
                             onStartTallying={handleStartTallying}
+                            onSubmitFullPrivacyTally={handleSubmitFullPrivacyTally}
                             onRevealResult={handleRevealResult}
                             onCanExecuteProposal={votingFactory.canExecuteProposal}
                             onExecuteProposal={handleExecuteProposal}

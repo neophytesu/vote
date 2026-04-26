@@ -103,6 +103,7 @@ export const VotingCenterABI = [
   "function getVoteCount(uint256 proposalId, uint256 optionIndex) view returns (uint256)",
   "function getAllVoteCounts(uint256 proposalId) view returns (uint256[])",
   "function getTotalVotes(uint256 proposalId) view returns (uint256)",
+  "function encryptedBallotCount(uint256 proposalId) view returns (uint256)",
 ] as const;
 
 export const RevealCenterABI = [
@@ -180,6 +181,7 @@ export const VotingFactoryABI = [
   "function getEffectiveState(uint256 votingId) view returns (uint8)",
   "function getCenterAddresses() view returns (address registration, address voting, address reveal, address statistics)",
   "function getExecutionCenterAddress() view returns (address)",
+  "function encryptedVoting() view returns (address)",
 ] as const;
 
 /**
@@ -197,6 +199,8 @@ export const ExecutionCenterABI = [
  */
 export const AnonymousVotingABI = [
   "function semaphore() view returns (address)",
+  "function hasSemaphoreGroup(uint256 votingId) view returns (bool)",
+  "function isWeightGroupCreated(uint256 votingId, uint256 groupIndex) view returns (bool)",
   "function votingSemaphoreGroupId(uint256 votingId) view returns (uint256)",
   "function votingSemaphoreGroupIdByWeight(uint256 votingId, uint256 groupIndex) view returns (uint256)",
   "function registerVoterAnonymous(uint256 votingId, uint256 identityCommitment)",
@@ -205,6 +209,9 @@ export const AnonymousVotingABI = [
   "function castVoteAnonymousWeighted(uint256 votingId, uint256 optionIndex, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousRanked(uint256 votingId, uint256 encodedRanking, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
   "function castVoteAnonymousQuadratic(uint256 votingId, uint256 encodedVote, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacy(uint256 votingId, bytes encryptedBallot, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "function castVoteFullPrivacyWeighted(uint256 votingId, bytes encryptedBallot, uint256 groupIndex, tuple(uint256 merkleTreeDepth, uint256 merkleTreeRoot, uint256 nullifier, uint256 message, uint256 scope, uint256[8] points) proof)",
+  "event FullPrivacyBallotCast(uint256 indexed votingId, bytes32 ballotHash, uint256 nullifierHash)",
 ] as const;
 
 /**
@@ -213,6 +220,8 @@ export const AnonymousVotingABI = [
 export const EncryptedVotingABI = [
   "function initializeEncryptedVoting(uint256 votingId)",
   "function castVoteEncrypted(uint256 votingId, bytes calldata encryptedBallot)",
+  "function submitTallyResult(uint256 votingId, uint256 totalBallots, uint256[] decryptedCounts)",
+  "function approveTallyResult(uint256 votingId)",
 ] as const;
 
 /**
@@ -339,7 +348,8 @@ export function getContractAddresses(chainId: number) {
     case 1337: // Local dev
       return CONTRACT_ADDRESSES.localhost;
     default:
-      return CONTRACT_ADDRESSES.localhost;
+      // 非本地链勿回退到 localhost 地址，避免在主网误读合约（如 groupId 全为 0）
+      return CONTRACT_ADDRESSES.sepolia;
   }
 }
 `;
